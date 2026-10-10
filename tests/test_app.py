@@ -41,7 +41,8 @@ def test_login_wrong_password(monkeypatch):
     assert any("salah" in e.value for e in at.error)
     assert not [b for b in at.button if b.label == "Hitung"]
 
-def test_app_runs_and_computes(monkeypatch):
+def test_app_runs_and_computes(monkeypatch, tmp_path):
+    monkeypatch.setenv("HISTORI_DB_URL", f"sqlite:///{tmp_path / 'histori.db'}")
     fc = mcas()
     def fake_get(url, headers=None, params=None, timeout=None):
         path = url.replace(ad.BASE_URL, "")
@@ -57,9 +58,13 @@ def test_app_runs_and_computes(monkeypatch):
     assert "Target realistis" in labels and "Target max" in labels
     vals = {m.label: m.value for m in at.metric}
     assert vals["Target realistis"] == "292" and vals["Target max"] == "296"
-    h = at.session_state["histori"]
-    assert len(h) == 1 and h[0]["Nama Emiten"] == "MCAS" and h[0]["Target Adimologi"] == 292
-    assert list(h[0]) == ["Nama Emiten", "Tanggal & Waktu Pengecekan", "Target Adimologi", "Stop Loss", "Current Price"]
+    assert "histori" not in at.session_state  # tersimpan ke DB, bukan ke sesi
+    # sesi baru (login ulang) masih melihat histori dari DB -> persisten
+    at2 = open_app(monkeypatch)
+    hdf = [d.value for d in at2.dataframe if "Nama Emiten" in d.value.columns][0]
+    assert list(hdf.columns) == ["Nama Emiten", "Tanggal & Waktu Pengecekan", "Target Adimologi", "Stop Loss", "Current Price"]
+    assert len(hdf) == 1 and hdf.iloc[0]["Nama Emiten"] == "MCAS" and hdf.iloc[0]["Target Adimologi"] == 292
+    assert hdf.iloc[0]["Tanggal & Waktu Pengecekan"].endswith("WIB")
 
 
 def test_multi_batch(monkeypatch):
@@ -72,3 +77,6 @@ def test_multi_batch(monkeypatch):
     assert not at.exception, [e.value for e in at.exception]
     df = at.session_state["multi_df"]
     assert df.loc[0, "Kode"] == "MCAS" and df.loc[0, "Verdict"] == "TIDAK ADA SINYAL"
+    # tanpa HISTORI_DB_URL: histori jatuh ke sesi, app tetap jalan
+    ok = df.loc[df["Verdict"] != "ERROR", "Kode"].tolist()
+    assert ok and [h["emiten"] for h in at.session_state["histori"]] == ok

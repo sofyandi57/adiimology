@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 import plotly.graph_objects as go
+import sqlalchemy as sa
 import streamlit as st
 
 import adimology as ad
@@ -111,14 +112,84 @@ def harian_chart(r: ad.Result) -> go.Figure:
     return fig
 
 
+# ---------------------------------------------------------------------------- histori
+# Database diatur di Secrets: [connections.histori] url = "postgresql://..." (Neon).
+# Tanpa itu, histori hanya tersimpan selama sesi (session_state).
+HIST_META = sa.MetaData()
+HIST_TABLE = sa.Table(
+    "histori", HIST_META,
+    sa.Column("id", sa.Integer, primary_key=True, autoincrement=True),
+    sa.Column("emiten", sa.String(10), nullable=False),
+    sa.Column("waktu", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("target", sa.Float),
+    sa.Column("stop_loss", sa.Float),
+    sa.Column("harga", sa.Float))
+
+
+def histori_url() -> str | None:
+    try:
+        u = st.secrets["connections"]["histori"]["url"]
+        if u:
+            return str(u)
+    except Exception:
+        pass
+    return os.environ.get("HISTORI_DB_URL") or None
+
+
+@st.cache_resource(show_spinner=False)
+def histori_engine(url: str) -> sa.Engine:
+    eng = sa.create_engine(url, pool_pre_ping=True)
+    HIST_META.create_all(eng)
+    return eng
+
+
+def _num(x):
+    return None if x is None or pd.isna(x) else float(x)
+
+
 def catat_histori(r: ad.Result) -> None:
-    """Simpan hasil hitung ke histori sesi (hilang saat tab ditutup / logout)."""
-    st.session_state.setdefault("histori", []).append({
-        "Nama Emiten": r.params.kode,
-        "Tanggal & Waktu Pengecekan": dt.datetime.now(ZoneInfo("Asia/Jakarta")).strftime("%Y-%m-%d %H:%M:%S WIB"),
-        "Target Adimologi": r.calc["t_real_r"],
-        "Stop Loss": r.plan["sl"],
-        "Current Price": r.harga})
+    row = dict(emiten=r.params.kode, waktu=dt.datetime.now(dt.timezone.utc),
+               target=_num(r.calc["t_real_r"]), stop_loss=_num(r.plan["sl"]), harga=_num(r.harga))
+    url = histori_url()
+    if url:
+        try:
+            with histori_engine(url).begin() as c:
+                c.execute(HIST_TABLE.insert().values(**row))
+            st.session_state.pop("_db_err", None)
+            return
+        except Exception as e:  # jangan sampai DB mematikan kalkulator
+            st.session_state["_db_err"] = type(e).__name__
+    st.session_state.setdefault("histori", []).append(row)
+
+
+def load_histori(limit: int = 1000) -> pd.DataFrame:
+    rows = list(st.session_state.get("histori", []))
+    url = histori_url()
+    if url:
+        try:
+            with histori_engine(url).connect() as c:
+                q = sa.select(HIST_TABLE).order_by(HIST_TABLE.c.id.desc()).limit(limit)
+                rows += [dict(m) for m in c.execute(q).mappings()]
+        except Exception as e:
+            st.session_state["_db_err"] = type(e).__name__
+    cols = ["Nama Emiten", "Tanggal & Waktu Pengecekan", "Target Adimologi", "Stop Loss", "Current Price"]
+    if not rows:
+        return pd.DataFrame(columns=cols)
+    df = pd.DataFrame(rows)
+    df["waktu"] = pd.to_datetime(df["waktu"], utc=True).dt.tz_convert(ZoneInfo("Asia/Jakarta"))
+    df = df.sort_values("waktu", ascending=False)
+    df["waktu"] = df["waktu"].dt.strftime("%Y-%m-%d %H:%M:%S WIB")
+    df = df.rename(columns={"emiten": cols[0], "waktu": cols[1], "target": cols[2],
+                            "stop_loss": cols[3], "harga": cols[4]})
+    return df[cols]
+
+
+def hapus_histori() -> None:
+    st.session_state.pop("histori", None)
+    url = histori_url()
+    if url:
+        with histori_engine(url).begin() as c:
+            c.execute(HIST_TABLE.delete())
 
 
 def ringkas(r: ad.Result) -> dict:
@@ -307,21 +378,26 @@ with tab_multi:
                                     "Upside realistis %": st.column_config.NumberColumn(format="%+.1f")})
 
 with tab_hist:
-    hist = st.session_state.get("histori", [])
-    if not hist:
+    hdf = load_histori()
+    if not histori_url():
+        st.warning("Database histori belum diatur, histori hanya tersimpan selama sesi ini "
+                   "(hilang saat refresh/Keluar). Isi `[connections.histori] url` di Secrets.")
+    elif st.session_state.get("_db_err"):
+        st.error(f"Gagal mengakses database histori ({st.session_state['_db_err']}). "
+                 "Hasil terbaru disimpan sementara di sesi ini.")
+    if hdf.empty:
         st.info("Belum ada histori. Setiap hasil **Hitung** dan batch Multi-saham tercatat di sini.")
     else:
-        hdf = pd.DataFrame(hist[::-1])
         st.dataframe(hdf, hide_index=True, width="stretch",
                      column_config={c: st.column_config.NumberColumn(format="%,.0f")
                                     for c in ["Target Adimologi", "Stop Loss", "Current Price"]})
-        h1, h2 = st.columns([1, 1])
+        h1, h2, h3 = st.columns([1, 1, 1])
         h1.download_button("Unduh CSV", hdf.to_csv(index=False).encode(), "histori_adimology.csv", "text/csv")
-        if h2.button("Hapus histori"):
-            st.session_state.pop("histori", None)
+        yakin = h3.checkbox("Yakin hapus semua")
+        if h2.button("Hapus histori", disabled=not yakin):
+            hapus_histori()
             st.rerun()
-        st.caption("Target Adimologi = target realistis. Histori tersimpan selama sesi ini saja "
-                   "(hilang saat halaman di-refresh, tab ditutup, atau Keluar). Unduh CSV untuk menyimpan.")
+        st.caption("Target Adimologi = target realistis. Menampilkan 1.000 catatan terbaru.")
 
 with tab_rumus:
     st.markdown("""
