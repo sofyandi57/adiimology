@@ -24,6 +24,12 @@ class FakeClient(ad.InvezgoClient):
             return self.window_rows
         if "/order-book/" in path:
             return self.ob
+        if "/financial-statement/" in path:
+            return FIN[params["statement"]]
+        if "/keystat/" in path:
+            return FIN["KS"]
+        if "/information/" in path:
+            return {"code": "MCAS", "name": "M Cash Integrasi", "sector": "Teknologi", "subsector": "Perangkat lunak"}
         raise AssertionError(path)
 
 
@@ -48,3 +54,22 @@ def setup_case():
     daily = {d: (1000, 100.0) for d in ["2026-10-05", "2026-10-06", "2026-10-07", "2026-10-08", "2026-10-09"]}
     ob = {"bid": [{"bid1price": 100, "bid1lot": 4000}], "offer": [{"offer1price": 101, "offer1lot": 6000}]}
     return FakeClient(chart, window, daily, ob)
+
+
+def panel(rows: dict) -> dict:
+    """Bentuk respons /analysis/financial-statement & /keystat: {akun: {(tahun, kuartal): nilai}}."""
+    return {"rows": [{"name": n, "level": 0,
+                      "values": [{"col": f"Q{q} {y}", "year": y, "amount": v, "period": f"Q{q}"}
+                                 for (y, q), v in sorted(d.items(), reverse=True)]} for n, d in rows.items()]}
+
+
+_KS = [(2025, 1), (2025, 2), (2025, 3), (2025, 4), (2026, 1), (2026, 2)]
+FIN = {
+    "IS": panel({"Penjualan dan pendapatan usaha": dict(zip(_KS, [100e9, 210e9, 330e9, 460e9, 120e9, 250e9])),
+                 "Laba (rugi) yang dapat diatribusikan ke entitas induk": dict(zip(_KS, [5e9, 11e9, 18e9, 26e9, 7e9, 15e9]))}),
+    "BS": panel({"Jumlah aset": {k: 900e9 for k in _KS}, "Jumlah liabilitas": {k: 400e9 for k in _KS},
+                 "Jumlah ekuitas": {k: 500e9 for k in _KS}}),
+    "CF": panel({"Jumlah arus kas bersih yang diperoleh dari (digunakan untuk) aktivitas operasi":
+                 dict(zip(_KS, [8e9, 15e9, 20e9, 30e9, 9e9, 19e9]))}),
+    "KS": panel({"Saham": {k: 868e6 for k in _KS}}),
+}

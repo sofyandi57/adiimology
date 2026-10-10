@@ -65,6 +65,10 @@ def test_app_runs_and_computes(monkeypatch, tmp_path):
     tek = at.session_state["tek"]
     assert tek[0] == "ok" and tek[1]["verdict"] == "TIDAK TERUKUR"
     assert {"Area entry", "Stop loss", "Target jual 1", "Target jual 2"} <= {m.label for m in at.metric}
+    fund = at.session_state["fund"]
+    assert fund[0] == "ok" and fund[1]["periode"] == "Q2 2026" and fund[1]["nama"] == "M Cash Integrasi"
+    assert any("naik" in x.value for x in at.success)                 # sorotan hijau
+    assert any("Laba rugi" in m.value for m in at.markdown)
     # tombol Petunjuk membuka dialog tanpa error
     [b for b in at.button if b.label == "ℹ️ Petunjuk"][0].click().run()
     assert not at.exception, [e.value for e in at.exception]

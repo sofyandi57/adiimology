@@ -14,6 +14,7 @@ import sqlalchemy as sa
 import streamlit as st
 
 import adimology as ad
+import fundamental as fd
 import teknikal as tk
 
 st.set_page_config(page_title="Adimology Calculator", page_icon="📈", layout="wide")
@@ -243,6 +244,18 @@ def rekomendasi_chart(rk: dict) -> go.Figure:
     return fig
 
 
+def ambil_fundamental(client: ad.InvezgoClient, kode: str, harga: float) -> dict:
+    def opsional(path, params=None):
+        try:
+            return client.get(path, params)
+        except Exception:
+            return None
+    q = {"type": "Q", "limit": fd.N_KUARTAL}
+    lap = {s: client.get(f"/analysis/financial-statement/{kode}", {"statement": s, **q}) for s in ("IS", "BS", "CF")}
+    return fd.analisa(opsional(f"/analysis/information/{kode}"), lap["IS"], lap["BS"], lap["CF"],
+                      opsional(f"/analysis/keystat/{kode}", {"type": "Q", "limit": 8}), harga)
+
+
 PETUNJUK = """
 **Langkah cepat**
 1. Isi **Kode saham** (4 huruf, mis. BBCA) di sidebar.
@@ -253,6 +266,9 @@ PETUNJUK = """
 - **Ringkasan**: verdict Adimology, harga, avg bandar, target realistis & max, SL, grafik, kalkulator posisi.
 - **Rekomendasi**: analisa teknikal lanjutan: area entry aman, SL, target jual (TP1/TP2) dari support/resistance,
   MA 5/20/50/100/200, RSI 14, MACD (12, 26, 9), dan nilai bandar (net value top-5 broker).
+- **Fundamental**: highlight laba rugi, neraca, arus kas per kuartal (8 kuartal terakhir) dan valuasi
+  (PER, PBV, PS, ROE, ROA, yield). **Hijau** = tumbuh/naik, **kuning** = perlu dicek (mis. utang > aset, rugi,
+  arus kas negatif, current ratio < 1).
 - **Broker**: bandar terpilih, top net buy/sell, aliran harian bandar.
 - **Orderbook**: antrean bid/offer dan lot per papan yang dipakai rumus.
 - **Sensitivitas**: seberapa berubah target bila barang bandar / lot per papan berbeda.
@@ -335,6 +351,7 @@ params = ad.Params(
 
 if submitted:
     st.session_state.pop("tek", None)
+    st.session_state.pop("fund", None)
     if not key:
         st.session_state["res"] = ("err", "Isi API key Invezgo di sidebar atau di st.secrets.")
     else:
@@ -355,14 +372,19 @@ if submitted:
                     st.session_state["tek"] = ("ok", tk.rekomendasi(df_tk, bv))
             except Exception as e:  # teknikal gagal tidak boleh mematikan kalkulator
                 st.session_state["tek"] = ("err", str(e) if isinstance(e, ad.AdimologyError) else f"Error tak terduga: {e}")
+            try:
+                with st.spinner("Mengambil laporan keuangan..."):
+                    st.session_state["fund"] = ("ok", ambil_fundamental(CachedClient(key), r0.params.kode, r0.harga))
+            except Exception as e:  # fundamental gagal tidak boleh mematikan kalkulator
+                st.session_state["fund"] = ("err", str(e) if isinstance(e, ad.AdimologyError) else f"Error tak terduga: {e}")
 
 # ------------------------------------------------------------------------------- main
 st.title("Adimology Calculator")
 st.caption("Target harga metode Adimology dari data broker summary dan orderbook Invezgo. "
            "Edukasi, bukan ajakan transaksi. Metode heuristik, belum teruji statistik.")
 
-tab_main, tab_rek, tab_broker, tab_ob, tab_sens, tab_multi, tab_hist, tab_rumus = st.tabs(
-    ["Ringkasan", "Rekomendasi", "Broker", "Orderbook", "Sensitivitas", "Multi-saham", "Histori", "Rumus & catatan"])
+tab_main, tab_rek, tab_fund, tab_broker, tab_ob, tab_sens, tab_multi, tab_hist, tab_rumus = st.tabs(
+    ["Ringkasan", "Rekomendasi", "Fundamental", "Broker", "Orderbook", "Sensitivitas", "Multi-saham", "Histori", "Rumus & catatan"])
 
 state = st.session_state.get("res")
 with tab_main:
@@ -452,6 +474,41 @@ with tab_rek:
         catatan = ("MA200 belum tersedia (data < 200 hari bursa). " if rk["ma"][200] is None else "")
         st.caption(f"{catatan}Data {rk['n_bar']} hari bursa s/d {rk['tgl']}. Support/resistance dari swing high/low "
                    "±5 hari (250 hari terakhir), SL = support − 1 ATR14. Edukasi, bukan ajakan transaksi.")
+
+
+with tab_fund:
+    fund = st.session_state.get("fund")
+    if not fund:
+        st.info("Klik **Hitung** di sidebar. Laporan keuangan diambil bersamaan dengan Adimology.")
+    elif fund[0] == "err":
+        st.error(f"Data fundamental gagal diambil: {fund[1]}")
+    else:
+        f = fund[1]
+        kode_f = state[1].params.kode if state and state[0] == "ok" else ""
+        st.subheader(f"{kode_f} · {f['nama']}" if f["nama"] else kode_f)
+        st.caption(" · ".join(x for x in [f["sektor"], f["subsektor"], f"laporan terakhir {f['periode']}",
+                                          "nominal tabel dalam Rp miliar, per kuartal (bukan kumulatif)"] if x))
+        for p_ in f["peringatan"]:
+            st.warning(p_, icon="⚠️")
+        for s_ in f["sorotan"]:
+            st.success(s_, icon="📈")
+        ch = f["chart"]
+        fig_f = go.Figure()
+        fig_f.add_bar(x=ch["periode"], y=ch["pendapatan"] / 1e9, name="Pendapatan", marker_color="#93c5fd")
+        fig_f.add_bar(x=ch["periode"], y=ch["laba_bersih"] / 1e9, name="Laba bersih", marker_color="#2563eb")
+        fig_f.update_layout(height=320, barmode="group", margin=dict(l=10, r=10, t=30, b=10), yaxis_title="Rp miliar",
+                            legend=dict(orientation="h", y=1.12))
+        st.plotly_chart(fig_f, width="stretch")
+        for judul, kunci in [("Laba rugi (PnL)", "pnl"), ("Neraca (balance sheet)", "bs"), ("Arus kas (cash flow)", "cf")]:
+            st.markdown(f"**{judul}**")
+            st.dataframe(fd.style(f[kunci], f["mark"], kunci), width="stretch")
+        st.markdown("**Valuasi** (harga terakhir × saham beredar; laba & pendapatan 12 bulan terakhir)")
+        v_ = f["val"].set_index("Metrik")
+        st.dataframe(fd.style(v_, {("val", m, "Nilai"): c for m, c in f["vmark"].items()}, "val"), width="content")
+        st.caption("🟩 hijau = tumbuh/naik (YoY untuk pendapatan, laba, CFO; dibanding kuartal sebelumnya untuk aset, "
+                   "ekuitas, kas). 🟨 kuning = perlu dicek (liabilitas > aset, ekuitas/laba/arus kas negatif, DER > 2, "
+                   "current ratio < 1, neraca tidak seimbang). Sumber: laporan keuangan Invezgo; DER & current ratio "
+                   "tidak dinilai untuk bank. Edukasi, bukan ajakan transaksi.")
 
 
 if state and state[0] == "ok":
