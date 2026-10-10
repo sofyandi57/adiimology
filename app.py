@@ -136,9 +136,17 @@ def histori_url() -> str | None:
     return os.environ.get("HISTORI_DB_URL") or None
 
 
+def _sa_url(url: str) -> str:
+    """URL Neon (postgres:// atau postgresql://) -> driver psycopg 3."""
+    for pre in ("postgres://", "postgresql://"):
+        if url.startswith(pre):
+            return "postgresql+psycopg://" + url[len(pre):]
+    return url
+
+
 @st.cache_resource(show_spinner=False)
 def histori_engine(url: str) -> sa.Engine:
-    eng = sa.create_engine(url, pool_pre_ping=True)
+    eng = sa.create_engine(_sa_url(url), pool_pre_ping=True)
     HIST_META.create_all(eng)
     return eng
 
