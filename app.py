@@ -15,6 +15,7 @@ import streamlit as st
 
 import adimology as ad
 import fundamental as fd
+import laporan as lp
 import teknikal as tk
 
 st.set_page_config(page_title="Adimology Calculator", page_icon="📈", layout="wide")
@@ -261,6 +262,8 @@ PETUNJUK = """
 1. Isi **Kode saham** (4 huruf, mis. BBCA) di sidebar.
 2. Atur **Window broker summary** (jumlah hari bursa yang dianalisa; default 5).
 3. Klik **Hitung**. Hasil muncul di tab-tab di kanan dan otomatis tercatat di **Histori**.
+4. Di bawah tombol Hitung muncul **Unduh Excel** (semua data per sheet) dan **Unduh PDF** (dokumen riset:
+   keputusan BELI / TUNGGU / HINDARI-JUAL, rencana trading, grafik, teknikal, bandar, fundamental).
 
 **Tab**
 - **Ringkasan**: verdict Adimology, harga, avg bandar, target realistis & max, SL, grafik, kalkulator posisi.
@@ -352,6 +355,7 @@ params = ad.Params(
 if submitted:
     st.session_state.pop("tek", None)
     st.session_state.pop("fund", None)
+    st.session_state.pop("export", None)
     if not key:
         st.session_state["res"] = ("err", "Isi API key Invezgo di sidebar atau di st.secrets.")
     else:
@@ -377,6 +381,32 @@ if submitted:
                     st.session_state["fund"] = ("ok", ambil_fundamental(CachedClient(key), r0.params.kode, r0.harga))
             except Exception as e:  # fundamental gagal tidak boleh mematikan kalkulator
                 st.session_state["fund"] = ("err", str(e) if isinstance(e, ad.AdimologyError) else f"Error tak terduga: {e}")
+            tek_, fund_ = st.session_state.get("tek"), st.session_state.get("fund")
+            rk_ = tek_[1] if tek_ and tek_[0] == "ok" else None
+            f_ = fund_[1] if fund_ and fund_[0] == "ok" else None
+            now = dt.datetime.now(ZoneInfo("Asia/Jakarta"))
+            waktu = now.strftime("%Y-%m-%d %H:%M WIB")
+            nama_file = f"riset_{r0.params.kode}_{now:%Y%m%d_%H%M}"
+            exp = {"nama": nama_file}
+            with st.spinner("Menyiapkan dokumen ekspor..."):
+                for jenis, fn in (("xlsx", lp.excel_bytes), ("pdf", lp.pdf_bytes)):
+                    try:
+                        exp[jenis] = fn(r0, rk_, f_, waktu)
+                    except Exception as e:  # ekspor gagal tidak boleh mematikan kalkulator
+                        exp[f"{jenis}_err"] = f"{type(e).__name__}: {e}"
+            st.session_state["export"] = exp
+
+exp = st.session_state.get("export")
+if exp:
+    st.sidebar.markdown("**Export riset**")
+    if "xlsx" in exp:
+        st.sidebar.download_button("📊 Unduh Excel", exp["xlsx"], f"{exp['nama']}.xlsx", width="stretch",
+                                   mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    if "pdf" in exp:
+        st.sidebar.download_button("📄 Unduh PDF", exp["pdf"], f"{exp['nama']}.pdf", mime="application/pdf", width="stretch")
+    for jenis in ("xlsx", "pdf"):
+        if f"{jenis}_err" in exp:
+            st.sidebar.error(f"Gagal membuat {jenis.upper()}: {exp[f'{jenis}_err']}")
 
 # ------------------------------------------------------------------------------- main
 st.title("Adimology Calculator")

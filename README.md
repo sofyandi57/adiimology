@@ -6,8 +6,9 @@ Target harga metode Adimology dari data **broker summary + orderbook Invezgo**. 
 - `adimology.py`: mesin hitung (tanpa Streamlit; bisa dipakai ulang untuk backtest)
 - `app.py`: tampilan (login, Petunjuk, Ringkasan, Rekomendasi, Fundamental, Broker, Orderbook, Sensitivitas, Multi-saham, Histori, Rumus)
 - `fundamental.py`: tab Fundamental (PnL, neraca, arus kas per kuartal dari data YTD Invezgo, valuasi, peringatan kuning / sorotan hijau)
+- `laporan.py`: tombol Export: PDF dokumen riset (keputusan BELI / TUNGGU / HINDARI-JUAL) dan Excel (semua data per sheet)
 - `teknikal.py`: analisa teknikal tab Rekomendasi (support/resistance, MA 5/20/50/100/200, RSI, MACD, ATR, bandar value)
-- `tests/`: 26 tes (login, teknikal, fundamental, rumus, fraksi bertingkat, kasus MCAS sama dengan output Colab, UI smoke test)
+- `tests/`: 29 tes (login, teknikal, fundamental, ekspor, rumus, fraksi bertingkat, kasus MCAS sama dengan output Colab, UI smoke test)
 
 ## Jalankan lokal
 ```bash
