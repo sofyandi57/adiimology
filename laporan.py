@@ -117,7 +117,8 @@ def ringkasan_rows(r, rk: dict | None, f: dict | None, waktu: str, alr: dict | N
 
 
 # ------------------------------------------------------------------------ Excel
-def excel_bytes(r, rk: dict | None, f: dict | None, waktu: str, ovn: dict | None = None, alr: dict | None = None) -> bytes:
+def excel_bytes(r, rk: dict | None, f: dict | None, waktu: str, ovn: dict | None = None, alr: dict | None = None,
+                b200: dict | None = None) -> bytes:
     buf = io.BytesIO()
     kep, alasan = keputusan(r, rk, f, alr)
     with pd.ExcelWriter(buf, engine="openpyxl") as xw:
@@ -141,6 +142,12 @@ def excel_bytes(r, rk: dict | None, f: dict | None, waktu: str, ovn: dict | None
         pd.concat([bd.tabel(nilai), pd.DataFrame([{"Kriteria": "JEBAKAN", "Status": "⚠", "Bukti": j} for j in nilai["jebakan"]]),
                    pd.DataFrame([{"Kriteria": "Kategori", "Status": nilai["kategori"], "Bukti": f"skor {nilai['skor']:+d}"}])]
                   ).to_excel(xw, sheet_name="Penilaian bandar", index=False)
+        if b200:
+            pd.DataFrame([dict(b200, jenis="ringkasan", akumulator=None, distributor=None, konsentrasi=b200["konsentrasi"]["status"])]
+                         ).to_excel(xw, sheet_name="Bandar jangka panjang", index=False)
+            pd.concat([pd.DataFrame(b200["akumulator"]).assign(peran="akumulator"),
+                       pd.DataFrame(b200["distributor"]).assign(peran="distributor")]
+                      ).to_excel(xw, sheet_name="Bandar panjang broker", index=False)
         pd.DataFrame(al.ringkas(r, alr)).to_excel(xw, sheet_name="Konfirmasi aliran", index=False)
         pd.DataFrame([{"Catatan": bd.HASIL_BACKTEST}]).to_excel(xw, sheet_name="Hasil backtest", index=False)
         if alr is not None and not alr["konsistensi"].empty:
@@ -244,7 +251,8 @@ def _fund_table(df: pd.DataFrame, mark: dict, kunci: str, lebar: float):
     return _tbl(data, [first] + [rest] * len(df.columns), cell_bg=bg, font=7)
 
 
-def pdf_bytes(r, rk: dict | None, f: dict | None, waktu: str, ovn: dict | None = None, alr: dict | None = None) -> bytes:
+def pdf_bytes(r, rk: dict | None, f: dict | None, waktu: str, ovn: dict | None = None, alr: dict | None = None,
+              b200: dict | None = None) -> bytes:
     buf = io.BytesIO()
     doc = SimpleDocTemplate(buf, pagesize=A4, leftMargin=1.6 * cm, rightMargin=1.6 * cm, topMargin=1.4 * cm,
                             bottomMargin=1.4 * cm, title=f"Riset {r.params.kode}", author="Adimology Calculator")
@@ -294,6 +302,14 @@ def pdf_bytes(r, rk: dict | None, f: dict | None, waktu: str, ovn: dict | None =
     for i_ in nilai["info"]:
         el.append(Paragraph(_safe("Info: " + i_), small))
     el.append(Paragraph(_safe("* kriteria inti. Hasil backtest Adimology: " + bd.HASIL_BACKTEST), small))
+    if b200:
+        el.append(_tbl([[Paragraph(_safe(
+            f"Bandar {b200['hari']} hari bursa ({b200['dari']} s/d {b200['sampai']}): {b200['status']} - {b200['nyangkut']}. "
+            f"{b200['keterangan']}."), p)]], [W], header=False,
+            cell_bg={(0, 0): {"NYANGKUT": "#FEF9C3", "TIDAK NYANGKUT": "#DCFCE7"}.get(b200["nyangkut"], "#F3F4F6")}))
+        data = [["Akumulator", "Net lot", "Avg beli", "Harga vs avg"]] + [
+            [_safe(x["code"]), _n(x["net_lot"]), _n(x["avg"], 1), _pct(x["floating"])] for x in b200["akumulator"]]
+        el.append(_tbl(data, [W * 0.25] * 4))
     el.append(Paragraph("Skenario target Adimology (belum terbukti backtest)", h2))
     ad_rows = [["Verdict", "Bandar", "Avg bandar", "Net (lot)", "Target realistis", "Target max", "SL window"],
                [Paragraph(_safe(r.verdict), ParagraphStyle("c", parent=p, fontSize=8, leading=9)), _safe(r.bandar["code"]), _n(r.bandar["avg"], 1), _n(r.bandar["net_lot"]),

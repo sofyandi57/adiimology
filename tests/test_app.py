@@ -75,6 +75,10 @@ def test_app_runs_and_computes(monkeypatch, tmp_path):
     ovn = at.session_state["ovn"]
     assert ovn[0] == "ok" and ovn[1]["n_hari"] == 40 and ovn[1]["sinyal"]["bsjp"] is not None
     assert any("BSJP" in m.value for m in at.markdown)
+    b200 = at.session_state["b200"]
+    assert b200[0] == "err" and "kurang dari 20 hari" in b200[1]      # data tiruan hanya 5 hari harga; sukses diuji di test_bandar_panjang
+    assert "hari_terakhir" in at.session_state["vol"]
+    assert any("Volume rata-rata harian" in m.value for m in at.markdown)
     nilai = at.session_state["nilai"]
     assert nilai["kategori"] in bd.KATEGORI and len(nilai["kriteria"]) == 7
     assert any("Penilaian bandarmologi" in x.value for x in [*at.success, *at.info, *at.warning, *at.error])
@@ -113,3 +117,23 @@ def test_multi_batch(monkeypatch):
     # tanpa HISTORI_DB_URL: histori jatuh ke sesi, app tetap jalan
     ok = df.loc[df["Skenario Adimology"] != "ERROR", "Kode"].tolist()
     assert ok and [h["emiten"] for h in at.session_state["histori"]] == ok
+
+
+def test_b200_success_renders(monkeypatch):
+    fc = mcas()
+    monkeypatch.setattr(requests, "get", lambda url, headers=None, params=None, timeout=None: R(fc.get(url.replace(ad.BASE_URL, ""), params)))
+    monkeypatch.setenv("INVEZGO_API_KEY", "dummy")
+    fake = {"dari": "2026-01-01", "sampai": "2026-10-09", "hari": 200, "n_broker": 80, "status": "AKUMULASI",
+            "net_acc5_value": 9e9, "net_dist5_value": -4e9, "modal_top3": 300.0, "net_top3_lot": 5000.0,
+            "floating_top3": -0.12, "nyangkut": "NYANGKUT", "keterangan": "harga -12,0% di bawah modal",
+            "akumulator": [{"code": "AA", "broker": "X", "net_lot": 5000.0, "avg": 300.0, "floating": -0.12, "net_window_lot": 10.0}],
+            "distributor": [{"code": "BB", "broker": "Y", "net_lot": -3000.0, "avg": 320.0, "floating": -0.17, "net_window_lot": float("nan")}],
+            "konsentrasi": {"status": "TERSEBAR"}}
+    monkeypatch.setattr(bd, "bandar_panjang", lambda *a, **k: fake)
+    at = open_app(monkeypatch)
+    [b for b in at.button if b.label == "Hitung"][0].click().run()
+    assert not at.exception, [e.value for e in at.exception]
+    assert at.session_state["b200"][0] == "ok"
+    assert any("NYANGKUT" in w.value for w in at.warning)
+    assert any({"code", "floating"} <= set(d.value.columns) for d in at.dataframe)
+    assert at.session_state["export"]["pdf"][:4] == b"%PDF"

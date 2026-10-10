@@ -236,6 +236,44 @@ def tampil_penilaian(r: ad.Result, nilai: dict) -> None:
     st.caption(catatan)
 
 
+def tampil_volume_dan_b200(r: ad.Result) -> None:
+    v = st.session_state.get("vol")
+    if v:
+        rows = [{"Periode": f"{n} hari bursa", "Volume rata-rata (lot/hari)": v[n]["lot_rata"], "Median (lot/hari)": v[n]["lot_median"],
+                 "Nilai transaksi rata-rata (Rp miliar/hari)": v[n]["nilai_rata"] / 1e9} for n in (20, 60, 200) if n in v]
+        ht = v["hari_terakhir"]
+        st.markdown(f"**Volume rata-rata harian** · hari terakhir {fmt(ht['lot'])} lot"
+                    + (f" ({ht['rvol']:.1f}x median 20 hari)" if pd.notna(ht["rvol"]) else ""))
+        st.dataframe(pd.DataFrame(rows), hide_index=True, width="content", column_config={
+            "Volume rata-rata (lot/hari)": st.column_config.NumberColumn(format="%,.0f"),
+            "Median (lot/hari)": st.column_config.NumberColumn(format="%,.0f"),
+            "Nilai transaksi rata-rata (Rp miliar/hari)": st.column_config.NumberColumn(format="%,.2f")})
+    b = st.session_state.get("b200")
+    if not b:
+        return
+    st.markdown("#### 🏦 Bandar jangka panjang: akumulasi/distribusi dan nyangkut atau tidak")
+    if b[0] == "err":
+        st.warning(f"Info bandar jangka panjang gagal: {b[1]}")
+        return
+    p = b[1]
+    box = {"NYANGKUT": st.warning, "IMPAS": st.info, "TIDAK NYANGKUT": st.success}.get(p["nyangkut"], st.error)
+    box(f"**{r.params.kode} · {p['dari']} s/d {p['sampai']} ({p['hari']} hari bursa): {p['status']} · {p['nyangkut']}**  \n"
+        f"{p['keterangan']}.  \nNet top-5 akumulator vs top-5 distributor: {p['net_acc5_value'] / 1e9:+,.1f} M vs "
+        f"{p['net_dist5_value'] / 1e9:+,.1f} M. Konsentrasi: {p['konsentrasi']['status']}.", icon="🏦")
+    cfg = {"net_lot": st.column_config.NumberColumn("Net periode (lot)", format="%,.0f"),
+           "avg": st.column_config.NumberColumn("Avg", format="%,.1f"),
+           "floating": st.column_config.NumberColumn("Harga vs avg", format="percent"),
+           "net_window_lot": st.column_config.NumberColumn("Net window sekarang (lot)", format="%,.0f"),
+           "code": "Kode", "broker": "Broker"}
+    a1, a2 = st.columns(2)
+    a1.markdown("**Top akumulator** (avg = harga beli rata-rata)")
+    a1.dataframe(pd.DataFrame(p["akumulator"]), hide_index=True, column_config=cfg, width="stretch")
+    a2.markdown("**Top distributor** (avg = harga jual rata-rata)")
+    a2.dataframe(pd.DataFrame(p["distributor"]), hide_index=True, column_config=cfg, width="stretch")
+    st.caption("Modal = rata-rata harga beli tertimbang volume selama periode; tidak tahu kapan barang dibeli dan tidak "
+               "melihat penjualan di pasar nego, jadi 'nyangkut' adalah perkiraan kasar, bukan posisi sebenarnya.")
+
+
 MA_WARNA = {5: "#0ea5e9", 20: "#f59e0b", 50: "#10b981", 100: "#8b5cf6", 200: "#ef4444"}
 
 
@@ -315,6 +353,10 @@ PETUNJUK = """
   = WASPADA.
 - **Target Adimology adalah skenario**, bukan prediksi: di backtest tidak lebih baik dari beli acak.
 - Keputusan di PDF: BELI hanya bila AKUMULASI KUAT **dan** teknikal di area beli.
+
+**Bandar jangka panjang** (Ringkasan): akumulasi/distribusi selama 200 hari bursa (bisa diubah di sidebar) dan
+apakah bandar **nyangkut**: harga ≥ 5% di bawah modal rata-rata top-3 akumulator = NYANGKUT; ±5% = IMPAS; di atas =
+TIDAK NYANGKUT. Perkiraan kasar dari broker summary, bukan posisi sebenarnya. Di bawahnya ada volume rata-rata harian.
 
 **Langkah cepat**
 1. Isi **Kode saham** (4 huruf, mis. BBCA) di sidebar.
@@ -396,6 +438,9 @@ with st.sidebar.form("param"):
                                help="Top 3: barang = total net 3 akumulator teratas, avg = rata-rata tertimbang volume beli.")
     excl = st.text_input("Broker dikecualikan (pisah koma)", value=", ".join(al.RITEL_DEFAULT),
                          help="Broker dominan ritel yang bukan bandar: XL (Stockbit), YP (Mirae), XC (Ajaib), PD (Indo Premier).")
+    b200_on = st.checkbox("Info bandar jangka panjang (akumulasi/distribusi, nyangkut atau tidak)", value=True,
+                          help="Satu panggilan API untuk broker summary seluruh periode di bawah.")
+    b200_hari = st.number_input("Jumlah hari bursa jangka panjang", 20, 250, 200, 10)
     aliran_on = st.checkbox("Aliran lanjutan (asing, nego, konsistensi 1/3/7/20 hari, afiliasi ≥5%)", value=True,
                             help="Menambah ±7 panggilan API per Hitung.")
     lpp_manual = st.number_input("Lot per papan manual (0 = dari orderbook)", min_value=0.0, value=0.0, step=100.0,
@@ -434,6 +479,8 @@ if submitted:
     st.session_state.pop("ovn", None)
     st.session_state.pop("aliran", None)
     st.session_state.pop("nilai", None)
+    st.session_state.pop("vol", None)
+    st.session_state.pop("b200", None)
     if not key:
         st.session_state["res"] = ("err", "Isi API key Invezgo di sidebar atau di st.secrets.")
     else:
@@ -463,6 +510,17 @@ if submitted:
             ali_, tek_n = st.session_state.get("aliran"), st.session_state.get("tek")
             st.session_state["nilai"] = bd.penilaian(r0, ali_[1] if ali_ and ali_[0] == "ok" else None,
                                                      tek_n[1] if tek_n and tek_n[0] == "ok" else None)
+            rk_n = tek_n[1] if tek_n and tek_n[0] == "ok" else None
+            src_n = rk_n["ind"] if rk_n else r0.chart
+            st.session_state["vol"] = bd.volume_rata(src_n)
+            if b200_on:
+                try:
+                    with st.spinner(f"Menganalisa bandar {int(b200_hari)} hari terakhir..."):
+                        st.session_state["b200"] = ("ok", bd.bandar_panjang(
+                            CachedClient(key), r0.params.kode, src_n["tgl"].tolist(), r0.harga, r0.bs,
+                            r0.params.broker_dikecualikan, r0.params.investor, r0.params.market, hari=int(b200_hari)))
+                except Exception as e:  # bandar jangka panjang gagal tidak boleh mematikan kalkulator
+                    st.session_state["b200"] = ("err", str(e) if isinstance(e, ad.AdimologyError) else f"Error tak terduga: {e}")
             try:
                 with st.spinner("Mengambil laporan keuangan..."):
                     st.session_state["fund"] = ("ok", ambil_fundamental(CachedClient(key), r0.params.kode, r0.harga))
@@ -488,7 +546,8 @@ if submitted:
             with st.spinner("Menyiapkan dokumen ekspor..."):
                 for jenis, fn in (("xlsx", lp.excel_bytes), ("pdf", lp.pdf_bytes)):
                     try:
-                        exp[jenis] = fn(r0, rk_, f_, waktu, o_, a_)
+                        exp[jenis] = fn(r0, rk_, f_, waktu, o_, a_, st.session_state.get("b200", (None, None))[1]
+                                        if (st.session_state.get("b200") or (None,))[0] == "ok" else None)
                     except Exception as e:  # ekspor gagal tidak boleh mematikan kalkulator
                         exp[f"{jenis}_err"] = f"{type(e).__name__}: {e}"
             st.session_state["export"] = exp
@@ -523,6 +582,7 @@ with tab_main:
     else:
         r: ad.Result = state[1]
         tampil_penilaian(r, st.session_state.get("nilai") or bd.penilaian(r))
+        tampil_volume_dan_b200(r)
         st.markdown("#### 🧮 Skenario target Adimology (belum terbukti)")
         st.info(f"**{r.params.kode} → {r.verdict}** (skenario, bukan sinyal)" + "".join(f"\n\n- {a}" for a in r.alasan),
                 icon="🧮")

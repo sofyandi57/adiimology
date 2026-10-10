@@ -189,3 +189,74 @@ def tabel(p: dict) -> pd.DataFrame:
     ikon = {YA: "🟢 ya", TIDAK: "🔴 tidak", NETRAL: "⚪ netral", NA: "– tidak diukur"}
     return pd.DataFrame([{"Kriteria": x["kriteria"] + (" *" if x["inti"] else ""), "Status": ikon[x["status"]],
                           "Bukti": x["bukti"]} for x in p["kriteria"]])
+
+
+# ------------------------------------------------------------- bandar jangka panjang
+def volume_rata(df: pd.DataFrame, harga: float | None = None) -> dict:
+    """Volume rata-rata harian (lot) dan nilai transaksi rata-rata (Rp) untuk 20/60/200 hari bursa."""
+    d = df.dropna(subset=["close", "volume"]).reset_index(drop=True)
+    out = {}
+    for n in (20, 60, 200):
+        x = d.tail(n)
+        if len(x) < min(n, 10):
+            continue
+        out[n] = dict(hari=len(x), lot_rata=float(x["volume"].mean()) / 100, lot_median=float(x["volume"].median()) / 100,
+                      nilai_rata=float((x["close"] * x["volume"]).mean()))
+    last = float(d["volume"].iloc[-1]) / 100 if len(d) else np.nan
+    base = out.get(20, {}).get("lot_median")
+    out["hari_terakhir"] = dict(lot=last, rvol=last / base if base else np.nan)
+    return out
+
+
+def bandar_panjang(client, kode: str, tgl_list: list, harga: float, bs_window: pd.DataFrame | None = None,
+                   excl=(), investor: str = "all", market: str = "RG", hari: int = 200, nyangkut_pct: float = 0.05) -> dict:
+    """Akumulasi/distribusi N hari bursa terakhir dan apakah bandar nyangkut (harga di bawah modal rata-rata).
+
+    Satu panggilan API (broker summary rentang panjang). 'Modal' = rata-rata harga beli tertimbang volume beli
+    selama periode; ini pendekatan kasar (tidak tahu kapan barang dibeli), bukan posisi sebenarnya.
+    """
+    import adimology as ad
+    tgl = list(tgl_list)[-hari:]
+    if len(tgl) < 20:
+        raise ad.AdimologyError("Data tanggal bursa kurang dari 20 hari untuk analisa bandar jangka panjang.")
+    bs = ad.broker_summary(client, kode, tgl[0], tgl[-1], investor, market)
+    if bs.empty:
+        raise ad.AdimologyError("Broker summary kosong untuk periode panjang.")
+    for c in ("net_volume", "buy_volume", "sell_volume", "buy_avg", "sell_avg", "net_value"):
+        if c in bs:
+            bs[c] = pd.to_numeric(bs[c], errors="coerce")
+    b = bs[~bs["code"].isin(set(excl))]
+    beli = b[b["net_volume"] > 0].sort_values("net_volume", ascending=False)
+    jual = b[b["net_volume"] < 0].sort_values("net_volume")
+    win = (bs_window.set_index("code")["net_volume"] / 100) if bs_window is not None and not bs_window.empty else pd.Series(dtype=float)
+
+    def baris(row, sisi):
+        avg = row["buy_avg"] if sisi == "beli" else row["sell_avg"]
+        fl = harga / avg - 1 if pd.notna(avg) and avg > 0 else np.nan
+        return dict(code=row["code"], broker=row["name"], net_lot=float(row["net_volume"]) / 100, avg=float(avg) if pd.notna(avg) else np.nan,
+                    floating=float(fl) if pd.notna(fl) else np.nan, net_window_lot=float(win.get(row["code"], np.nan)))
+    acc = [baris(r, "beli") for _, r in beli.head(5).iterrows()]
+    dist = [baris(r, "jual") for _, r in jual.head(5).iterrows()]
+
+    top3 = beli.head(3)
+    w = top3["buy_volume"].where(top3["buy_avg"].notna(), 0)
+    modal3 = float((top3["buy_avg"].fillna(0) * w).sum() / w.sum()) if w.sum() > 0 else np.nan
+    net3 = float(top3["net_volume"].sum()) / 100
+    net_acc5 = float(beli.head(5)["net_value"].sum()) if "net_value" in beli else np.nan
+    net_dist5 = float(jual.head(5)["net_value"].sum()) if "net_value" in jual else np.nan
+    net_total = net_acc5 + net_dist5
+    status = "AKUMULASI" if net_total > 0 else "DISTRIBUSI" if net_total < 0 else "NETRAL"
+    fl3 = harga / modal3 - 1 if modal3 and modal3 > 0 else np.nan
+    if net3 <= 0 or np.isnan(fl3):
+        nyangkut, ket = "TIDAK ADA AKUMULATOR BERSIH", "tidak ada broker dengan net beli selama periode"
+    elif fl3 <= -nyangkut_pct:
+        nyangkut, ket = "NYANGKUT", (f"harga {fl3:+.1%} di bawah modal rata-rata top-3 akumulator ({modal3:,.0f}); "
+                                     f"mereka masih memegang ±{net3:,.0f} lot dan butuh harga ≥ {modal3:,.0f} untuk impas")
+    elif fl3 < nyangkut_pct:
+        nyangkut, ket = "IMPAS", f"harga {fl3:+.1%} dari modal rata-rata ({modal3:,.0f}): dekat titik impas"
+    else:
+        nyangkut, ket = "TIDAK NYANGKUT", (f"harga {fl3:+.1%} di atas modal rata-rata ({modal3:,.0f}): akumulator untung, "
+                                           "ada risiko ambil untung")
+    return dict(dari=tgl[0], sampai=tgl[-1], hari=len(tgl), n_broker=int(len(bs)), status=status, net_acc5_value=net_acc5,
+                net_dist5_value=net_dist5, modal_top3=modal3, net_top3_lot=net3, floating_top3=fl3, nyangkut=nyangkut,
+                keterangan=ket, akumulator=acc, distributor=dist, konsentrasi=ad.konsentrasi(bs, excl))
