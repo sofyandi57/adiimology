@@ -75,6 +75,13 @@ def test_app_runs_and_computes(monkeypatch, tmp_path):
     ovn = at.session_state["ovn"]
     assert ovn[0] == "ok" and ovn[1]["n_hari"] == 40 and ovn[1]["sinyal"]["bsjp"] is not None
     assert any("BSJP" in m.value for m in at.markdown)
+    hkr = at.session_state["hengky"]
+    assert hkr[0] == "ok" and not hkr[1]["checklist"]["lolos_inti"]            # data tiruan: tidak uptrend / data kurang
+    assert any("Aturan" in d.value.columns and "Status" in d.value.columns for d in at.dataframe)
+    assert hkr[1]["sid"]["status"] == "SID TURUN SAAT SIDEWAYS"
+    [b for b in at.button if b.label == "Cek IEP / IEV sekarang"][0].click().run()
+    assert not at.exception, [e.value for e in at.exception]
+    assert at.session_state["pra_open"][1]["gap"] > 0
     b200 = at.session_state["b200"]
     assert b200[0] == "err" and "kurang dari 20 hari" in b200[1]      # data tiruan hanya 5 hari harga; sukses diuji di test_bandar_panjang
     assert "hari_terakhir" in at.session_state["vol"]

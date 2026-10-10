@@ -33,6 +33,12 @@ class FakeClient(ad.InvezgoClient):
         if "/shareholder-above" in path:
             return {"data": [{"date": "2026-06-01T17:00:00Z", "code": "MCAS", "name": "PT INDUK MCAS",
                               "format_securities": "CC", "next_pct": 51.0}]}
+        if "/shareholder/number/" in path:
+            return [{"code": "MCAS", "date": f"2026-{m:02d}-28T00:00:00Z", "value": v, "price": "260"}
+                    for m, v in zip(range(6, 10), (5000, 4900, 4800, 4600))]
+        if "/intraday-data/" in path:
+            return {"iep": 270, "iev": 500000, "prev": 264, "open": 0, "close": 264, "bid_price": 266, "bid_lot": 100,
+                    "offer_price": 268, "offer_lot": 200}
         if "/chart/multi-time/" in path:
             return INTRADAY
         if "/information/" in path:

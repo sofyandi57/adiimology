@@ -17,6 +17,7 @@ import adimology as ad
 import aliran as al
 import bandar as bd
 import fundamental as fd
+import hengky as hk
 import intraday as idt
 import laporan as lp
 import teknikal as tk
@@ -236,6 +237,101 @@ def tampil_penilaian(r: ad.Result, nilai: dict) -> None:
     st.caption(catatan)
 
 
+def tampil_hengky(r, api_key) -> None:
+    h = st.session_state.get("hengky")
+    st.caption("Aturan disiplin trading dari materi Ko Hengky (Remora) yang diterjemahkan jadi pemeriksaan otomatis. "
+               "Ini penerjemahan heuristik kami dan belum divalidasi backtest.")
+    with st.expander("Catatan kritis sumber materi"):
+        st.write(hk.CATATAN_KRITIS)
+        st.markdown("**Aturan disiplin**\n" + "\n".join(f"- {a}" for a in hk.ATURAN_DISIPLIN))
+    if r is None or not h:
+        st.info("Klik **Hitung** di sidebar.")
+        return
+    if h[0] == "err":
+        st.error(f"Pemeriksaan aturan Hengky gagal: {h[1]}")
+        return
+    a, cl = h[1], h[1]["checklist"]
+    (st.success if cl["lolos_inti"] else st.warning)(f"**{r.params.kode} · {cl['hasil']}**  \nProfil: **{a['profil']['profil']}**"
+                                                      f" · {a['profil']['alasan']}", icon="✅" if cl["lolos_inti"] else "⏸️")
+    st.dataframe(hk.tabel(cl), hide_index=True, width="stretch", column_config={"Bukti": st.column_config.TextColumn(width="large")})
+    st.caption("* = aturan inti (uptrend, likuid, beli di support/breakout, level pembatal). Keputusan BELI di PDF butuh semua aturan inti ya.")
+
+    rn = a["rencana"]
+    if rn:
+        st.markdown("#### 🎯 Dua rencana masuk: support atau breakout (stop 1 tick di bawah level)")
+        rows = []
+        if rn["support"]:
+            s_ = rn["support"]
+            rows.append({"Rencana": "Beli di support", "Level": f"{s_['level']:,.0f}", "Entry": f"{s_['entry_ref']:,.0f}",
+                         "Stop 1 tick": f"{s_['stop_tick']:,.0f}", "Stop 1 ATR": f"{s_['stop_atr']:,.0f}", "Target": f"{s_['target']:,.0f} ({s_['target_nama']})",
+                         "R/R (stop tick | ATR)": f"{s_['rr']:.1f} | {s_['rr_atr']:.1f}", "Syarat": "harga turun ke area & bertahan; alert di level"})
+        if rn["breakout"]:
+            b_ = rn["breakout"]
+            rows.append({"Rencana": "Breakout", "Level": f"{b_['level']:,.0f}", "Entry": f"{b_['entry']:,.0f}",
+                         "Stop 1 tick": f"{b_['stop_tick']:,.0f}", "Stop 1 ATR": f"{b_['stop_atr']:,.0f}", "Target": f"{b_['target']:,.0f}",
+                         "R/R (stop tick | ATR)": f"{b_['rr']:.1f} | {b_['rr_atr']:.1f}",
+                         "Syarat": f"close di atas level, volume ≥ {b_['volume_konfirmasi_lot']:,.0f} lot, bid-offer mendukung"})
+        st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
+        st.caption(f"Harga impas setelah fee: {rn['impas']:,.0f} ({rn['impas_pct']:+.2%}). Stop 1 tick sangat ketat: false breakout "
+                   "sering terjadi, jadi ukuran posisi harus dihitung dari jarak stop ini. Jangan average down.")
+
+    pv = a["pv"]
+    if pv:
+        st.markdown("#### 📊 Harga–volume (Wyckoff ala materi)")
+        st.write(f"**{hk.PV_TEKS[pv['label_n']]}** · {pv['n']} hari: harga {pv['chg_n']:+.1%}, volume {pv['rvol_n']:.1f}x median")
+        hh = pv["harian"].assign(label=pv["harian"]["label"].map(hk.PV_TEKS))
+        st.dataframe(hh, hide_index=True, width="stretch", column_config={
+            "tgl": "Tanggal", "close": st.column_config.NumberColumn("Close", format="%,.0f"),
+            "chg": st.column_config.NumberColumn("Perubahan", format="percent"),
+            "rvol": st.column_config.NumberColumn("Volume / median 20h", format="%.1fx"), "label": "Bacaan"})
+        cl_ = pv["climax"]
+        if cl_:
+            st.info(f"Selling climax {cl_['tgl']} (volume {cl_['rvol']:.1f}x, {cl_['chg']:+.1%} setelah turun {cl_['ret20_sebelum']:+.0%}); "
+                    + ("low climax belum ditembus: akumulasi mungkin mulai." if cl_["low_bertahan"] else
+                       "low climax sudah ditembus: belum selesai." if cl_["low_bertahan"] is False else "belum ada data setelahnya."),
+                    icon="🔻")
+        if pv["crossing"]:
+            st.warning("Candle kecil + volume besar (indikasi crossing/repo, bukan akumulasi ritel): "
+                       + ", ".join(str(x) for x in pv["crossing"]) + ". Cek pasar nego dan pasangan broker di kedua sisi.", icon="🔁")
+    obb = a["ob"]
+    if obb:
+        st.markdown("#### 📖 Bid–offer (lot per antrean, angka cantik, dinding)")
+        if obb["tutup"]:
+            st.info("Orderbook hanya 1-2 level (pasar tutup?): bacaan bid-offer tidak representatif.")
+        rows = [{"Sisi": n, "Level": x["n"], "Total lot": x["total_lot"], "Lot per antrean": x["lpa"],
+                 "Angka cantik (algo?)": ", ".join(f"{c['lot']:,.0f}@{c['harga']:,.0f}" for c in x["cantik"][:4]) or "-",
+                 "Dinding": ", ".join(f"{d['lot']:,.0f}@{d['harga']:,.0f} ({d['kali']:.0f}x)" for d in x["dinding"][:2]) or "-"}
+                for n, x in (("Bid", obb["bid"]), ("Offer", obb["offer"]))]
+        st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch", column_config={
+            "Total lot": st.column_config.NumberColumn(format="%,.0f"), "Lot per antrean": st.column_config.NumberColumn(format="%,.1f")})
+        st.caption("Lot per antrean = total lot ÷ frekuensi (kecil = ritel, besar = institusi/algo). Offer yang di-reload atau bid yang "
+                   "ditarik tidak bisa terbaca dari satu snapshot. Tren offer/bid belum terbukti menaikkan harga di backtest kami.")
+    sid = a["sid"]
+    if sid and sid["status"] != "TIDAK DIUKUR":
+        st.markdown("#### 👥 Jumlah investor (SID)")
+        st.write(f"**{sid['status']}**: {sid['sid_awal']:,.0f} → {sid['sid_akhir']:,.0f} ({sid['chg']:+.1%}) selama {sid['dari']} s/d {sid['sampai']}"
+                 + (f", harga {sid['price_chg']:+.1%}" if pd.notna(sid["price_chg"]) else "")
+                 + ". SID turun saat sideways sepi = ritel keluar (indikasi akumulasi); data bulanan, terlambat.")
+
+    st.markdown("#### ⏰ Pra-open (IEP/IEV)")
+    st.caption("Untuk BPJP: cek jam pra-pembukaan (±08:45–09:00 WIB). Di luar jam itu IEP bisa 0 atau data lama. 1 panggilan API.")
+    if st.button("Cek IEP / IEV sekarang") and api_key:
+        try:
+            st.session_state["pra_open"] = ("ok", hk.pra_open(CachedClient(api_key), r.params.kode))
+        except Exception as e:
+            st.session_state["pra_open"] = ("err", str(e))
+    po = st.session_state.get("pra_open")
+    if po and po[0] == "err":
+        st.error(po[1])
+    elif po:
+        p = po[1]
+        if p["valid"]:
+            st.success(f"{p['waktu']}: IEP {p['iep']:,.0f} (gap {p['gap']:+.1%} dari {p['prev']:,.0f}), IEV {p['iev_lot']:,.0f} lot; "
+                       f"bid {p['bid']:,.0f} ({p['bid_lot']:,.0f}) / offer {p['offer']:,.0f} ({p['offer_lot']:,.0f}).")
+        else:
+            st.info(f"{p['waktu']}: IEP belum tersedia (di luar sesi pra-pembukaan). Terakhir {p['last']:,.0f}, bid {p['bid']:,.0f} / offer {p['offer']:,.0f}.")
+
+
 def tampil_volume_dan_b200(r: ad.Result) -> None:
     v = st.session_state.get("vol")
     if v:
@@ -354,6 +450,11 @@ PETUNJUK = """
 - **Target Adimology adalah skenario**, bukan prediksi: di backtest tidak lebih baik dari beli acak.
 - Keputusan di PDF: BELI hanya bila AKUMULASI KUAT **dan** teknikal di area beli.
 
+**Aturan Hengky** (tab baru): checklist disiplin trading dari materi Ko Hengky (Remora): uptrend, likuid, beli di
+support/breakout (bukan resistance), level pembatal (stop 1 tick, entry reason = exit reason), harga–volume (Wyckoff),
+bid–offer (lot per antrean, angka cantik, dinding), SID, tombol pra-open IEP/IEV. Keputusan BELI di PDF butuh semua
+aturan inti terpenuhi. Penerjemahan heuristik, belum divalidasi backtest.
+
 **Bandar jangka panjang** (Ringkasan): akumulasi/distribusi selama 200 hari bursa (bisa diubah di sidebar) dan
 apakah bandar **nyangkut**: harga ≥ 5% di bawah modal rata-rata top-3 akumulator = NYANGKUT; ±5% = IMPAS; di atas =
 TIDAK NYANGKUT. Perkiraan kasar dari broker summary, bukan posisi sebenarnya. Di bawahnya ada volume rata-rata harian.
@@ -459,6 +560,8 @@ with st.sidebar.form("param"):
         dist = st.number_input("Ambang distribusi (% dari net window)", 1.0, 100.0, 25.0, 5.0) / 100
         modal = st.number_input("Modal (Rp)", 100_000, 10_000_000_000, 10_000_000, 1_000_000)
         risiko = st.number_input("Risiko per trade (%)", 0.1, 10.0, 1.0, 0.1) / 100
+        min_nilai_m = st.number_input("Min nilai transaksi harian untuk 'likuid' (Rp miliar)", 0.0, 1000.0, 5.0, 1.0,
+                                      help="Aturan Hengky: trade hanya saham likuid. Ambang ini pilihan kami, bukan angka dari materi.")
         fee_b = st.number_input("Fee beli (%)", 0.0, 2.0, 0.15, 0.01) / 100
         fee_j = st.number_input("Fee jual (%)", 0.0, 2.0, 0.25, 0.01) / 100
     submitted = st.form_submit_button("Hitung", type="primary", width="stretch")
@@ -481,6 +584,8 @@ if submitted:
     st.session_state.pop("nilai", None)
     st.session_state.pop("vol", None)
     st.session_state.pop("b200", None)
+    st.session_state.pop("hengky", None)
+    st.session_state.pop("pra_open", None)
     if not key:
         st.session_state["res"] = ("err", "Isi API key Invezgo di sidebar atau di st.secrets.")
     else:
@@ -522,6 +627,11 @@ if submitted:
                 except Exception as e:  # bandar jangka panjang gagal tidak boleh mematikan kalkulator
                     st.session_state["b200"] = ("err", str(e) if isinstance(e, ad.AdimologyError) else f"Error tak terduga: {e}")
             try:
+                with st.spinner("Memeriksa aturan Hengky..."):
+                    st.session_state["hengky"] = ("ok", hk.analisa(CachedClient(key), r0, rk_n, st.session_state["nilai"], min_nilai_m))
+            except Exception as e:  # aturan Hengky gagal tidak boleh mematikan kalkulator
+                st.session_state["hengky"] = ("err", str(e) if isinstance(e, ad.AdimologyError) else f"Error tak terduga: {e}")
+            try:
                 with st.spinner("Mengambil laporan keuangan..."):
                     st.session_state["fund"] = ("ok", ambil_fundamental(CachedClient(key), r0.params.kode, r0.harga))
             except Exception as e:  # fundamental gagal tidak boleh mematikan kalkulator
@@ -547,7 +657,9 @@ if submitted:
                 for jenis, fn in (("xlsx", lp.excel_bytes), ("pdf", lp.pdf_bytes)):
                     try:
                         exp[jenis] = fn(r0, rk_, f_, waktu, o_, a_, st.session_state.get("b200", (None, None))[1]
-                                        if (st.session_state.get("b200") or (None,))[0] == "ok" else None)
+                                        if (st.session_state.get("b200") or (None,))[0] == "ok" else None,
+                                        st.session_state.get("hengky", (None, None))[1]
+                                        if (st.session_state.get("hengky") or (None,))[0] == "ok" else None)
                     except Exception as e:  # ekspor gagal tidak boleh mematikan kalkulator
                         exp[f"{jenis}_err"] = f"{type(e).__name__}: {e}"
             st.session_state["export"] = exp
@@ -570,8 +682,8 @@ st.caption("Penilaian bandarmologi berbasis bukti (aliran broker, asing, nego, f
            "Adimology dari data Invezgo. Edukasi, bukan ajakan transaksi. Semua aturan heuristik; target Adimology "
            "tidak terbukti unggul di backtest.")
 
-tab_main, tab_rek, tab_fund, tab_broker, tab_ob, tab_sens, tab_multi, tab_hist, tab_rumus = st.tabs(
-    ["Ringkasan", "Rekomendasi", "Fundamental", "Broker", "Orderbook", "Sensitivitas", "Multi-saham", "Histori", "Rumus & catatan"])
+tab_main, tab_rek, tab_hk, tab_fund, tab_broker, tab_ob, tab_sens, tab_multi, tab_hist, tab_rumus = st.tabs(
+    ["Ringkasan", "Rekomendasi", "Aturan Hengky", "Fundamental", "Broker", "Orderbook", "Sensitivitas", "Multi-saham", "Histori", "Rumus & catatan"])
 
 state = st.session_state.get("res")
 with tab_main:
@@ -751,6 +863,9 @@ with tab_rek:
                    "±5 hari (250 hari terakhir), SL = support − 1 ATR14. Edukasi, bukan ajakan transaksi.")
     tampil_bpjp_bsjp()
 
+
+with tab_hk:
+    tampil_hengky(state[1] if state and state[0] == "ok" else None, key)
 
 with tab_fund:
     fund = st.session_state.get("fund")
