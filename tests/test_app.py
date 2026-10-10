@@ -99,6 +99,7 @@ def test_app_runs_and_computes(monkeypatch, tmp_path):
     assert konf.set_index("Konfirmasi").loc["Afiliasi pemegang saham ≥5%", "Status"] == "TERAFILIASI"
     exp = at.session_state["export"]
     assert exp["pdf"][:4] == b"%PDF" and exp["xlsx"][:2] == b"PK" and exp["nama"].startswith("riset_MCAS_")
+    assert exp["txt"].startswith(b"# MCAS") and len(exp["txt"]) < 16_000 and b"## KEPUTUSAN APP" in exp["txt"]
     # tombol Petunjuk membuka dialog tanpa error
     [b for b in at.button if b.label == "ℹ️ Petunjuk"][0].click().run()
     assert not at.exception, [e.value for e in at.exception]

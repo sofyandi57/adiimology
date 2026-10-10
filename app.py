@@ -18,6 +18,7 @@ import aliran as al
 import bandar as bd
 import fundamental as fd
 import hengky as hk
+import ringkas as rg
 import intraday as idt
 import laporan as lp
 import teknikal as tk
@@ -450,6 +451,10 @@ PETUNJUK = """
 - **Target Adimology adalah skenario**, bukan prediksi: di backtest tidak lebih baik dari beli acak.
 - Keputusan di PDF: BELI hanya bila AKUMULASI KUAT **dan** teknikal di area beli.
 
+**Unduh TXT (untuk AI)**: ringkasan padat (±7–12 KB) seluruh tab + statistik historis harga saham itu (peluang naik,
+sentuh target sebelum stop) untuk ditempel ke Claude/ChatGPT, mis. untuk bertanya peluang naik, cocok hold/swing/scalping,
+dan harga masuk.
+
 **Aturan Hengky** (tab baru): checklist disiplin trading dari materi Ko Hengky (Remora): uptrend, likuid, beli di
 support/breakout (bukan resistance), level pembatal (stop 1 tick, entry reason = exit reason), harga–volume (Wyckoff),
 bid–offer (lot per antrean, angka cantik, dinding), SID, tombol pra-open IEP/IEV. Keputusan BELI di PDF butuh semua
@@ -653,15 +658,18 @@ if submitted:
             waktu = now.strftime("%Y-%m-%d %H:%M WIB")
             nama_file = f"riset_{r0.params.kode}_{now:%Y%m%d_%H%M}"
             exp = {"nama": nama_file}
+            b_ = (st.session_state.get("b200") or (None, None))[1] if (st.session_state.get("b200") or (None,))[0] == "ok" else None
+            hk_s = (st.session_state.get("hengky") or (None, None))[1] if (st.session_state.get("hengky") or (None,))[0] == "ok" else None
             with st.spinner("Menyiapkan dokumen ekspor..."):
                 for jenis, fn in (("xlsx", lp.excel_bytes), ("pdf", lp.pdf_bytes)):
                     try:
-                        exp[jenis] = fn(r0, rk_, f_, waktu, o_, a_, st.session_state.get("b200", (None, None))[1]
-                                        if (st.session_state.get("b200") or (None,))[0] == "ok" else None,
-                                        st.session_state.get("hengky", (None, None))[1]
-                                        if (st.session_state.get("hengky") or (None,))[0] == "ok" else None)
+                        exp[jenis] = fn(r0, rk_, f_, waktu, o_, a_, b_, hk_s)
                     except Exception as e:  # ekspor gagal tidak boleh mematikan kalkulator
                         exp[f"{jenis}_err"] = f"{type(e).__name__}: {e}"
+                try:
+                    exp["txt"] = rg.txt_bytes(r0, rk_, f_, waktu, o_, a_, b_, hk_s, st.session_state.get("nilai"), st.session_state.get("vol"))
+                except Exception as e:
+                    exp["txt_err"] = f"{type(e).__name__}: {e}"
             st.session_state["export"] = exp
 
 exp = st.session_state.get("export")
@@ -672,7 +680,10 @@ if exp:
                                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
     if "pdf" in exp:
         st.sidebar.download_button("📄 Unduh PDF", exp["pdf"], f"{exp['nama']}.pdf", mime="application/pdf", width="stretch")
-    for jenis in ("xlsx", "pdf"):
+    if "txt" in exp:
+        st.sidebar.download_button("🧾 Unduh TXT (untuk AI)", exp["txt"], f"{exp['nama']}.txt", mime="text/plain", width="stretch",
+                                   help=f"Ringkasan padat ({len(exp['txt']) / 1024:.1f} KB) untuk ditempel ke Claude/ChatGPT.")
+    for jenis in ("xlsx", "pdf", "txt"):
         if f"{jenis}_err" in exp:
             st.sidebar.error(f"Gagal membuat {jenis.upper()}: {exp[f'{jenis}_err']}")
 
