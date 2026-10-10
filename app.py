@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import hmac
 import os
 from dataclasses import replace
 
@@ -14,15 +15,46 @@ import adimology as ad
 st.set_page_config(page_title="Adimology Calculator", page_icon="📈", layout="wide")
 
 
-# ------------------------------------------------------------------ API key & cache
-def get_api_key() -> str | None:
+def get_secret(name: str) -> str | None:
     try:
-        k = st.secrets.get("INVEZGO_API_KEY")
-        if k:
-            return str(k)
+        v = st.secrets.get(name)
+        if v:
+            return str(v)
     except Exception:
         pass
-    return os.environ.get("INVEZGO_API_KEY") or st.session_state.get("_key_input") or None
+    return os.environ.get(name) or None
+
+
+# ------------------------------------------------------------------------------ login
+def login_gate() -> None:
+    """Halaman login. Email & password diatur di Secrets (APP_LOGIN_EMAIL, APP_LOGIN_PASSWORD)."""
+    if st.session_state.get("_auth"):
+        return
+    email_ok, pw_ok = get_secret("APP_LOGIN_EMAIL"), get_secret("APP_LOGIN_PASSWORD")
+    _, mid, _ = st.columns([1, 1, 1])
+    with mid:
+        if not (email_ok and pw_ok):
+            st.error("Login belum diatur. Isi APP_LOGIN_EMAIL dan APP_LOGIN_PASSWORD di Secrets.")
+            st.stop()
+        with st.form("login"):
+            email = st.text_input("Email")
+            pw = st.text_input("Password", type="password")
+            masuk = st.form_submit_button("Masuk", type="primary", width="stretch")
+        if masuk:
+            if (hmac.compare_digest(email.strip().lower().encode(), email_ok.strip().lower().encode())
+                    and hmac.compare_digest(pw.encode(), pw_ok.encode())):
+                st.session_state["_auth"] = True
+                st.rerun()
+            st.error("Email atau password salah.")
+    st.stop()
+
+
+login_gate()
+
+
+# ------------------------------------------------------------------ API key & cache
+def get_api_key() -> str | None:
+    return get_secret("INVEZGO_API_KEY") or st.session_state.get("_key_input") or None
 
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -87,6 +119,9 @@ def ringkas(r: ad.Result) -> dict:
 
 # ------------------------------------------------------------------------------ sidebar
 st.sidebar.title("📈 Adimology")
+if st.sidebar.button("Keluar"):
+    st.session_state.pop("_auth", None)
+    st.rerun()
 key = get_api_key()
 if not key:
     st.sidebar.text_input("Invezgo API key", type="password", key="_key_input",
