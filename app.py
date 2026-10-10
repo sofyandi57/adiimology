@@ -15,6 +15,7 @@ import streamlit as st
 
 import adimology as ad
 import aliran as al
+import bandar as bd
 import fundamental as fd
 import intraday as idt
 import laporan as lp
@@ -207,10 +208,32 @@ def hapus_histori() -> None:
 
 
 def ringkas(r: ad.Result) -> dict:
-    return {"Kode": r.params.kode, "Verdict": r.verdict, "Bandar": r.bandar["code"],
+    return {"Kode": r.params.kode, "Penilaian (tanpa aliran)": bd.penilaian(r)["kategori"],
+            "Skenario Adimology": r.verdict, "Bandar": r.bandar["code"],
             "Net lot": r.bandar["net_lot"], "Avg bandar": r.bandar["avg"], "Harga": r.harga,
             "Target realistis": r.calc["t_real_r"], "Target max": r.calc["t_max_r"],
             "Upside realistis %": r.calc["upside_real"] * 100, "Alasan": "; ".join(r.alasan[:2])}
+
+
+def tampil_penilaian(r: ad.Result, nilai: dict) -> None:
+    kat = nilai["kategori"]
+    box, ikon = {"AKUMULASI KUAT": (st.success, "🟢"), "AKUMULASI LEMAH / BELUM SEARAH": (st.info, "🔵"),
+                 "TIDAK ADA BUKTI AKUMULASI": (st.warning, "⚪")}.get(kat, (st.error, "🚨"))
+    box(f"**{r.params.kode} · Penilaian bandarmologi: {kat}**  \nSkor {nilai['skor']:+d} dari {nilai['skor_maks']} "
+        "kriteria terukur. Status positif hanya bila bukti independen searah; satu jebakan cukup untuk WASPADA.", icon=ikon)
+    for j in nilai["jebakan"]:
+        st.error(j, icon="⚠️")
+    for i_ in nilai["info"]:
+        st.info(i_, icon="ℹ️")
+    st.dataframe(bd.tabel(nilai), hide_index=True, width="stretch",
+                 column_config={"Bukti": st.column_config.TextColumn(width="large")})
+    al_ = st.session_state.get("aliran")
+    catatan = "* = kriteria inti (wajib terukur dan tidak negatif untuk AKUMULASI KUAT)."
+    if not nilai["lengkap"]:
+        catatan += " Sebagian kriteria tidak diukur: aktifkan *Aliran lanjutan* di sidebar agar penilaian lengkap."
+    if al_ and al_[0] == "err":
+        catatan += f" Aliran lanjutan gagal: {al_[1]}"
+    st.caption(catatan)
 
 
 MA_WARNA = {5: "#0ea5e9", 20: "#f59e0b", 50: "#10b981", 100: "#8b5cf6", 200: "#ef4444"}
@@ -285,6 +308,14 @@ def ambil_aliran(client: ad.InvezgoClient, r: ad.Result) -> dict:
 
 
 PETUNJUK = """
+**Cara membaca (penting)**
+- Mulai dari **Penilaian bandarmologi** di Ringkasan: AKUMULASI KUAT hanya bila konsentrasi beli, konsistensi
+  bandar, tidak ada distribusi, harga dekat modal bandar, asing, nego, dan fase harga **searah**. Satu **jebakan**
+  (distribusi terselubung, bandar jual di nego, volume spike tanpa akumulasi, harga sudah dikejar, fase distribusi)
+  = WASPADA.
+- **Target Adimology adalah skenario**, bukan prediksi: di backtest tidak lebih baik dari beli acak.
+- Keputusan di PDF: BELI hanya bila AKUMULASI KUAT **dan** teknikal di area beli.
+
 **Langkah cepat**
 1. Isi **Kode saham** (4 huruf, mis. BBCA) di sidebar.
 2. Atur **Window broker summary** (jumlah hari bursa yang dianalisa; default 5).
@@ -402,6 +433,7 @@ if submitted:
     st.session_state.pop("export", None)
     st.session_state.pop("ovn", None)
     st.session_state.pop("aliran", None)
+    st.session_state.pop("nilai", None)
     if not key:
         st.session_state["res"] = ("err", "Isi API key Invezgo di sidebar atau di st.secrets.")
     else:
@@ -428,6 +460,9 @@ if submitted:
                         st.session_state["aliran"] = ("ok", ambil_aliran(CachedClient(key), r0))
                 except Exception as e:  # aliran gagal tidak boleh mematikan kalkulator
                     st.session_state["aliran"] = ("err", str(e) if isinstance(e, ad.AdimologyError) else f"Error tak terduga: {e}")
+            ali_, tek_n = st.session_state.get("aliran"), st.session_state.get("tek")
+            st.session_state["nilai"] = bd.penilaian(r0, ali_[1] if ali_ and ali_[0] == "ok" else None,
+                                                     tek_n[1] if tek_n and tek_n[0] == "ok" else None)
             try:
                 with st.spinner("Mengambil laporan keuangan..."):
                     st.session_state["fund"] = ("ok", ambil_fundamental(CachedClient(key), r0.params.kode, r0.harga))
@@ -472,8 +507,9 @@ if exp:
 
 # ------------------------------------------------------------------------------- main
 st.title("Adimology Calculator")
-st.caption("Target harga metode Adimology dari data broker summary dan orderbook Invezgo. "
-           "Edukasi, bukan ajakan transaksi. Metode heuristik, belum teruji statistik.")
+st.caption("Penilaian bandarmologi berbasis bukti (aliran broker, asing, nego, fase harga) plus skenario target "
+           "Adimology dari data Invezgo. Edukasi, bukan ajakan transaksi. Semua aturan heuristik; target Adimology "
+           "tidak terbukti unggul di backtest.")
 
 tab_main, tab_rek, tab_fund, tab_broker, tab_ob, tab_sens, tab_multi, tab_hist, tab_rumus = st.tabs(
     ["Ringkasan", "Rekomendasi", "Fundamental", "Broker", "Orderbook", "Sensitivitas", "Multi-saham", "Histori", "Rumus & catatan"])
@@ -486,8 +522,10 @@ with tab_main:
         st.error(state[1])
     else:
         r: ad.Result = state[1]
-        box = st.success if r.setup_ok else st.warning
-        box(f"**{r.params.kode} → {r.verdict}**" + "".join(f"\n\n- {a}" for a in r.alasan))
+        tampil_penilaian(r, st.session_state.get("nilai") or bd.penilaian(r))
+        st.markdown("#### 🧮 Skenario target Adimology (belum terbukti)")
+        st.info(f"**{r.params.kode} → {r.verdict}** (skenario, bukan sinyal)" + "".join(f"\n\n- {a}" for a in r.alasan),
+                icon="🧮")
         c = st.columns(6)
         c[0].metric("Harga", fmt(r.harga))
         c[1].metric(f"Avg bandar ({r.bandar['code']})", fmt(r.bandar["avg"], 1), f"{r.floating:+.1%} floating", delta_color="normal")
@@ -495,14 +533,12 @@ with tab_main:
         c[3].metric("Target realistis", fmt(r.calc["t_real_r"]), f"{r.calc['upside_real']:+.1%}")
         c[4].metric("Target max", fmt(r.calc["t_max_r"]), f"{r.calc['upside_max']:+.1%}")
         c[5].metric("SL (low window)", fmt(r.plan["sl"]), f"R/R {r.plan['rr']:.2f}" if pd.notna(r.plan["rr"]) else None, delta_color="off")
-        st.markdown(f"**Rentang target:** {fmt(r.calc['t_real_r'])} – {fmt(r.calc['t_max_r'])} "
-                    f"({r.calc['upside_real']:+.1%} s/d {r.calc['upside_max']:+.1%}) · peluang tercapai belum terukur "
-                    "(menunggu backtest)")
-        al_ = st.session_state.get("aliran")
-        st.dataframe(pd.DataFrame(al.ringkas(r, al_[1] if al_ and al_[0] == "ok" else None)),
-                     hide_index=True, width="stretch")
-        if al_ and al_[0] == "err":
-            st.caption(f"Aliran lanjutan gagal: {al_[1]}")
+        st.markdown(f"**Rentang skenario:** {fmt(r.calc['t_real_r'])} – {fmt(r.calc['t_max_r'])} "
+                    f"({r.calc['upside_real']:+.1%} s/d {r.calc['upside_max']:+.1%}). Perlakukan sebagai *potensi*, bukan "
+                    "probabilitas.")
+        with st.expander("Hasil backtest metode Adimology"):
+            st.write(bd.HASIL_BACKTEST)
+            st.caption("Uji masih terbatas (4 saham, satu periode). Detail: backtest/README.md di repo.")
         st.plotly_chart(make_chart(r), width="stretch")
         st.caption(f"Window {r.tgl_awal} s/d {r.tgl_akhir} ({r.params.window_hari} hari bursa) · "
                    f"barang bandar {fmt(r.calc['barang'])} lot · lot per papan {fmt(r.lot_per_papan)} ({r.lpp_sumber}) · "
@@ -783,7 +819,7 @@ with tab_multi:
                     rows.append(ringkas(rr_))
                     catat_histori(rr_)
                 except Exception as e:
-                    rows.append({"Kode": cd, "Verdict": "ERROR", "Alasan": str(e)})
+                    rows.append({"Kode": cd, "Skenario Adimology": "ERROR", "Alasan": str(e)})
                 prog.progress((i + 1) / len(codes))
             prog.empty()
             st.session_state["multi_df"] = pd.DataFrame(rows)

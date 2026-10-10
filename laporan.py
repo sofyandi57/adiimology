@@ -22,6 +22,7 @@ from reportlab.platypus import (CondPageBreak, Image, KeepTogether, Paragraph, S
                                 Spacer, Table, TableStyle)
 
 import aliran as al  # noqa: E402
+import bandar as bd  # noqa: E402
 import fundamental as fd  # noqa: E402
 import intraday as idt  # noqa: E402
 
@@ -42,9 +43,13 @@ def _fatal(f: dict | None) -> list[str]:
     return [p for p in f.get("peringatan", []) if any(k in p for k in kunci)]
 
 
-def keputusan(r, rk: dict | None, f: dict | None) -> tuple[str, list[str]]:
-    """Gabungkan Adimology, teknikal, dan fundamental jadi BELI / TUNGGU / HINDARI / JUAL."""
-    alasan = [f"Adimology: {r.verdict}" + (f" ({r.alasan[0]})" if r.alasan else "")]
+def keputusan(r, rk: dict | None, f: dict | None, alr: dict | None = None,
+              nilai: dict | None = None) -> tuple[str, list[str]]:
+    """BELI hanya bila bukti bandarmologi searah (AKUMULASI KUAT) DAN teknikal di area beli; jebakan atau
+    fundamental fatal = HINDARI / JUAL. Target Adimology hanya skenario (belum terbukti backtest)."""
+    nilai = nilai or bd.penilaian(r, alr, rk)
+    alasan = [f"Bandarmologi: {nilai['kategori']} (skor {nilai['skor']:+d} dari {nilai['skor_maks']} kriteria terukur)"]
+    alasan += [f"Jebakan: {j}" for j in nilai["jebakan"][:2]]
     if rk:
         alasan.append(f"Teknikal: {rk['verdict']} ({rk['alasan']})")
     else:
@@ -56,17 +61,14 @@ def keputusan(r, rk: dict | None, f: dict | None) -> tuple[str, list[str]]:
         alasan.append("Fundamental: " + fatal[0])
     else:
         alasan.append(f"Fundamental: tidak ada tanda bahaya besar ({len(f.get('peringatan', []))} catatan kuning)")
+    alasan.append(f"Skenario Adimology: {r.verdict} (bukan dasar keputusan; belum terbukti di backtest)")
 
-    kons = (getattr(r, "konsentrasi", None) or {}).get("status")
-    if kons:
-        alasan.append(f"Konsentrasi broker: {kons}")
-    if fatal or (rk and rk["verdict"] == "HINDARI"):
+    if fatal or nilai["kategori"].startswith("WASPADA") or (rk and rk["verdict"] == "HINDARI"):
         return "HINDARI / JUAL", alasan
-    if rk and rk["verdict"] == "BELI DI AREA ENTRY" and (r.setup_ok or (r.bandar.get("net_lot", 0) > 0 and not r.distribusi)):
-        if kons in ("TERSEBAR", "TIDAK ADA AKUMULASI"):
-            alasan.append("BELI ditahan: akumulasi tidak terkonsentrasi (top 3 pembeli < separuh lot top 15 penjual)")
-            return "TUNGGU", alasan
+    if nilai["kategori"] == "AKUMULASI KUAT" and rk and rk["verdict"] == "BELI DI AREA ENTRY":
         return "BELI", alasan
+    if rk and rk["verdict"] == "BELI DI AREA ENTRY":
+        alasan.append("BELI ditahan: bukti bandarmologi belum searah (perlu AKUMULASI KUAT)")
     return "TUNGGU", alasan
 
 
@@ -92,11 +94,12 @@ def _area(rk: dict) -> str:
     return f"{_n(rk['entry_lo'])} - {_n(rk['entry_hi'])}" if rk["zona_valid"] else "tidak ada (R/R kurang)"
 
 
-def ringkasan_rows(r, rk: dict | None, f: dict | None, waktu: str) -> list[tuple[str, str]]:
-    kep, _ = keputusan(r, rk, f)
+def ringkasan_rows(r, rk: dict | None, f: dict | None, waktu: str, alr: dict | None = None) -> list[tuple[str, str]]:
+    kep, _ = keputusan(r, rk, f, alr)
     rows = [("Kode", r.params.kode), ("Nama", (f or {}).get("nama") or "-"), ("Waktu analisa", waktu),
             ("Keputusan", kep), ("Harga terakhir", _n(r.harga)),
-            ("Verdict Adimology", r.verdict), ("Bandar (broker)", f"{r.bandar['code']} ({r.bandar.get('name', '')})"),
+            ("Penilaian bandarmologi", bd.penilaian(r, alr, rk)["kategori"]),
+            ("Skenario Adimology (belum terbukti)", r.verdict), ("Bandar (broker)", f"{r.bandar['code']} ({r.bandar.get('name', '')})"),
             ("Avg beli bandar", _n(r.bandar["avg"], 1)), ("Net bandar (lot)", _n(r.bandar["net_lot"])),
             ("Target realistis (Adimology)", _n(r.calc["t_real_r"])), ("Target max (Adimology)", _n(r.calc["t_max_r"])),
             ("SL low window (Adimology)", _n(r.plan["sl"])),
@@ -116,9 +119,9 @@ def ringkasan_rows(r, rk: dict | None, f: dict | None, waktu: str) -> list[tuple
 # ------------------------------------------------------------------------ Excel
 def excel_bytes(r, rk: dict | None, f: dict | None, waktu: str, ovn: dict | None = None, alr: dict | None = None) -> bytes:
     buf = io.BytesIO()
-    kep, alasan = keputusan(r, rk, f)
+    kep, alasan = keputusan(r, rk, f, alr)
     with pd.ExcelWriter(buf, engine="openpyxl") as xw:
-        ring = pd.DataFrame(ringkasan_rows(r, rk, f, waktu), columns=["Item", "Nilai"])
+        ring = pd.DataFrame(ringkasan_rows(r, rk, f, waktu, alr), columns=["Item", "Nilai"])
         ring = pd.concat([ring, pd.DataFrame([("Alasan keputusan", a) for a in alasan], columns=["Item", "Nilai"]),
                           pd.DataFrame([("Disclaimer", DISCLAIMER)], columns=["Item", "Nilai"])])
         ring.to_excel(xw, sheet_name="Ringkasan", index=False)
@@ -134,7 +137,12 @@ def excel_bytes(r, rk: dict | None, f: dict | None, waktu: str, ovn: dict | None
         bcols = [c for c in ["code", "name", "net_lot", "porsi_net_%", "buy_avg", "sell_avg", "net_value"] if c in r.bs]
         r.bs.sort_values("net_volume", ascending=False)[bcols].to_excel(xw, sheet_name="Broker", index=False)
         r.harian.to_excel(xw, sheet_name="Bandar harian", index=False)
+        nilai = bd.penilaian(r, alr, rk)
+        pd.concat([bd.tabel(nilai), pd.DataFrame([{"Kriteria": "JEBAKAN", "Status": "⚠", "Bukti": j} for j in nilai["jebakan"]]),
+                   pd.DataFrame([{"Kriteria": "Kategori", "Status": nilai["kategori"], "Bukti": f"skor {nilai['skor']:+d}"}])]
+                  ).to_excel(xw, sheet_name="Penilaian bandar", index=False)
         pd.DataFrame(al.ringkas(r, alr)).to_excel(xw, sheet_name="Konfirmasi aliran", index=False)
+        pd.DataFrame([{"Catatan": bd.HASIL_BACKTEST}]).to_excel(xw, sheet_name="Hasil backtest", index=False)
         if alr is not None and not alr["konsistensi"].empty:
             alr["konsistensi"].to_excel(xw, sheet_name="Konsistensi bandar", index=False)
         if ovn:
@@ -246,7 +254,7 @@ def pdf_bytes(r, rk: dict | None, f: dict | None, waktu: str, ovn: dict | None =
     h2 = ParagraphStyle("h2", parent=ss["Heading2"], fontSize=12, spaceBefore=10, spaceAfter=4)
     p = ParagraphStyle("p", parent=ss["BodyText"], fontSize=8.5, leading=11)
     small = ParagraphStyle("s", parent=p, fontSize=7, textColor=colors.HexColor("#6b7280"))
-    kep, alasan = keputusan(r, rk, f)
+    kep, alasan = keputusan(r, rk, f, alr)
     big = ParagraphStyle("k", parent=ss["Title"], fontSize=22, textColor=colors.white, alignment=TA_CENTER, leading=26)
 
     el = [Paragraph(_safe(f"Riset Saham {r.params.kode}" + (f" - {f['nama']}" if f and f.get("nama") else "")), h1),
@@ -272,17 +280,27 @@ def pdf_bytes(r, rk: dict | None, f: dict | None, waktu: str, ovn: dict | None =
         el.append(Paragraph("Analisa teknikal tidak tersedia.", p))
     el += [Spacer(1, 6), Image(io.BytesIO(_chart_png(r, rk)), width=W, height=W * 0.36)]
 
-    el.append(Paragraph("Adimology (bandarmologi)", h2))
+    nilai = bd.penilaian(r, alr, rk)
+    el.append(Paragraph(_safe(f"Penilaian bandarmologi: {nilai['kategori']} (skor {nilai['skor']:+d} dari "
+                              f"{nilai['skor_maks']} kriteria terukur)"), h2))
+    ikon = {bd.YA: "ya", bd.TIDAK: "TIDAK", bd.NETRAL: "netral", bd.NA: "tidak diukur"}
+    bg = {(i + 1, 1): {bd.YA: "#DCFCE7", bd.TIDAK: "#FEE2E2", bd.NETRAL: "#F3F4F6", bd.NA: "#F3F4F6"}[x["status"]]
+          for i, x in enumerate(nilai["kriteria"])}
+    el.append(_tbl([["Kriteria", "Status", "Bukti"]] +
+                   [[Paragraph(_safe(x["kriteria"] + (" *" if x["inti"] else "")), p), ikon[x["status"]], Paragraph(_safe(x["bukti"]), p)]
+                    for x in nilai["kriteria"]], [W * 0.3, W * 0.12, W * 0.58], cell_bg=bg))
+    for j in nilai["jebakan"]:
+        el.append(_tbl([[Paragraph("JEBAKAN: " + _safe(j), p)]], [W], header=False, cell_bg={(0, 0): "#FEE2E2"}))
+    for i_ in nilai["info"]:
+        el.append(Paragraph(_safe("Info: " + i_), small))
+    el.append(Paragraph(_safe("* kriteria inti. Hasil backtest Adimology: " + bd.HASIL_BACKTEST), small))
+    el.append(Paragraph("Skenario target Adimology (belum terbukti backtest)", h2))
     ad_rows = [["Verdict", "Bandar", "Avg bandar", "Net (lot)", "Target realistis", "Target max", "SL window"],
                [Paragraph(_safe(r.verdict), ParagraphStyle("c", parent=p, fontSize=8, leading=9)), _safe(r.bandar["code"]), _n(r.bandar["avg"], 1), _n(r.bandar["net_lot"]),
                 f"{_n(r.calc['t_real_r'])} ({_pct(r.calc['upside_real'])})", f"{_n(r.calc['t_max_r'])} ({_pct(r.calc['upside_max'])})",
                 _n(r.plan["sl"])]]
     el.append(_tbl(ad_rows, [W * 0.19, W * 0.09, W * 0.12, W * 0.12, W * 0.18, W * 0.18, W * 0.12]))
     el += [Paragraph("- " + _safe(a), p) for a in r.alasan]
-    konf = al.ringkas(r, alr)
-    el.append(_tbl([["Konfirmasi aliran", "Status", "Detail"]] +
-                   [[Paragraph(_safe(x["Konfirmasi"]), p), Paragraph(_safe(x["Status"]), p), Paragraph(_safe(x["Detail"]), p)]
-                    for x in konf], [W * 0.28, W * 0.2, W * 0.52]))
     el.append(Paragraph(_safe(f"Rentang target {_n(r.calc['t_real_r'])} - {_n(r.calc['t_max_r'])}; lot per papan "
                               f"{_n(r.lot_per_papan)} ({r.lpp_sumber}); mode bandar {r.params.mode_bandar}."), small))
     top = r.bs.sort_values("net_volume", ascending=False)

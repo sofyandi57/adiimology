@@ -20,15 +20,25 @@ def _inputs(liab_scale=0.5):
     return r, rk, f
 
 
+def _nilai(kat):
+    return {"kategori": kat, "skor": 4, "skor_maks": 7, "jebakan": ["contoh jebakan"] if kat.startswith("WASPADA") else [],
+            "kriteria": [], "info": []}
+
+
 def test_keputusan_rules():
     r, rk, f = _inputs()
-    assert lp.keputusan(r, dict(rk, verdict="HINDARI"), f)[0] == "HINDARI / JUAL"
-    assert lp.keputusan(r, dict(rk, verdict="BELI DI AREA ENTRY"), f)[0] == "BELI"
-    assert lp.keputusan(r, dict(rk, verdict="TUNGGU"), f)[0] == "TUNGGU"
-    _, _, f_bad = _inputs(liab_scale=1.3)                         # utang > aset menang atas teknikal
-    kep, alasan = lp.keputusan(r, dict(rk, verdict="BELI DI AREA ENTRY"), f_bad)
+    beli = dict(rk, verdict="BELI DI AREA ENTRY")
+    assert lp.keputusan(r, beli, f, nilai=_nilai("AKUMULASI KUAT"))[0] == "BELI"
+    kep, alasan = lp.keputusan(r, beli, f, nilai=_nilai("AKUMULASI LEMAH / BELUM SEARAH"))
+    assert kep == "TUNGGU" and any("belum searah" in a for a in alasan)
+    assert lp.keputusan(r, beli, f, nilai=_nilai("WASPADA: TANDA DISTRIBUSI / JEBAKAN"))[0] == "HINDARI / JUAL"
+    assert lp.keputusan(r, dict(rk, verdict="HINDARI"), f, nilai=_nilai("AKUMULASI KUAT"))[0] == "HINDARI / JUAL"
+    _, _, f_bad = _inputs(liab_scale=1.3)                         # utang > aset menang atas semuanya
+    kep, alasan = lp.keputusan(r, beli, f_bad, nilai=_nilai("AKUMULASI KUAT"))
     assert kep == "HINDARI / JUAL" and any("LEBIH BESAR" in a for a in alasan)
-    assert lp.keputusan(r, None, None)[0] == "TUNGGU"
+    # tanpa data aliran, penilaian tidak pernah KUAT -> tidak pernah BELI
+    assert lp.keputusan(r, beli, f)[0] != "BELI"
+    assert any("Skenario Adimology" in a for a in lp.keputusan(r, None, None)[1])
 
 
 def test_pdf_and_excel_are_built():
@@ -59,10 +69,3 @@ def test_export_without_technical_or_fundamental():
     r, _, _ = _inputs()
     assert lp.pdf_bytes(r, None, None, "x")[:4] == b"%PDF"
     assert "Ringkasan" in load_workbook(io.BytesIO(lp.excel_bytes(r, None, None, "x"))).sheetnames
-
-
-def test_beli_needs_concentrated_accumulation():
-    r, rk, f = _inputs()
-    r.konsentrasi = dict(r.konsentrasi, status="TERSEBAR")
-    kep, alasan = lp.keputusan(r, dict(rk, verdict="BELI DI AREA ENTRY"), f)
-    assert kep == "TUNGGU" and any("tidak terkonsentrasi" in a for a in alasan)

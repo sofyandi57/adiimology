@@ -1,5 +1,7 @@
 """Smoke test UI Streamlit dengan requests.get dipalsukan."""
 import adimology as ad
+import bandar as bd
+import pandas as pd
 import requests
 from streamlit.testing.v1 import AppTest
 from fakes import mcas
@@ -53,7 +55,7 @@ def test_app_runs_and_computes(monkeypatch, tmp_path):
     assert not at.exception
     [b for b in at.button if b.label == "Hitung"][0].click().run()
     assert not at.exception, [e.value for e in at.exception]
-    assert any("TIDAK ADA SINYAL" in w.value for w in at.warning)
+    assert any("TIDAK ADA SINYAL" in w.value and "skenario" in w.value for w in at.info)   # Adimology = skenario
     labels = [m.label for m in at.metric]
     assert "Target realistis" in labels and "Target max" in labels
     vals = {m.label: m.value for m in at.metric}
@@ -73,9 +75,14 @@ def test_app_runs_and_computes(monkeypatch, tmp_path):
     ovn = at.session_state["ovn"]
     assert ovn[0] == "ok" and ovn[1]["n_hari"] == 40 and ovn[1]["sinyal"]["bsjp"] is not None
     assert any("BSJP" in m.value for m in at.markdown)
+    nilai = at.session_state["nilai"]
+    assert nilai["kategori"] in bd.KATEGORI and len(nilai["kriteria"]) == 7
+    assert any("Penilaian bandarmologi" in x.value for x in [*at.success, *at.info, *at.warning, *at.error])
+    assert any("Kriteria" in d.value.columns for d in at.dataframe)
     aliran = at.session_state["aliran"]
     assert aliran[0] == "ok", aliran
-    konf = [d.value for d in at.dataframe if "Konfirmasi" in d.value.columns][0]
+    import aliran as al_mod
+    konf = pd.DataFrame(al_mod.ringkas(at.session_state["res"][1], aliran[1]))
     assert {"Konsentrasi (top 3 beli vs top 15 jual)", "Asing (window)", "Pasar negosiasi (window)",
             "Konsistensi bandar 1/3/7/20 hari", "Afiliasi pemegang saham ≥5%"} <= set(konf["Konfirmasi"])
     assert konf.set_index("Konfirmasi").loc["Afiliasi pemegang saham ≥5%", "Status"] == "TERAFILIASI"
@@ -101,7 +108,8 @@ def test_multi_batch(monkeypatch):
     [b for b in at.button if b.label == "Jalankan batch"][0].click().run()
     assert not at.exception, [e.value for e in at.exception]
     df = at.session_state["multi_df"]
-    assert df.loc[0, "Kode"] == "MCAS" and df.loc[0, "Verdict"] == "TIDAK ADA SINYAL"
+    assert df.loc[0, "Kode"] == "MCAS" and df.loc[0, "Skenario Adimology"] == "TIDAK ADA SINYAL"
+    assert df.loc[0, "Penilaian (tanpa aliran)"] in bd.KATEGORI
     # tanpa HISTORI_DB_URL: histori jatuh ke sesi, app tetap jalan
-    ok = df.loc[df["Verdict"] != "ERROR", "Kode"].tolist()
+    ok = df.loc[df["Skenario Adimology"] != "ERROR", "Kode"].tolist()
     assert ok and [h["emiten"] for h in at.session_state["histori"]] == ok
