@@ -22,6 +22,7 @@ from reportlab.platypus import (CondPageBreak, Image, KeepTogether, Paragraph, S
                                 Spacer, Table, TableStyle)
 
 import fundamental as fd  # noqa: E402
+import intraday as idt  # noqa: E402
 
 DISCLAIMER = ("Dokumen ini dibuat otomatis oleh Adimology Calculator dari data Invezgo untuk edukasi dan riset pribadi, "
               "BUKAN ajakan membeli atau menjual efek. Metode Adimology dan aturan teknikal bersifat heuristik dan belum "
@@ -106,7 +107,7 @@ def ringkasan_rows(r, rk: dict | None, f: dict | None, waktu: str) -> list[tuple
 
 
 # ------------------------------------------------------------------------ Excel
-def excel_bytes(r, rk: dict | None, f: dict | None, waktu: str) -> bytes:
+def excel_bytes(r, rk: dict | None, f: dict | None, waktu: str, ovn: dict | None = None) -> bytes:
     buf = io.BytesIO()
     kep, alasan = keputusan(r, rk, f)
     with pd.ExcelWriter(buf, engine="openpyxl") as xw:
@@ -126,6 +127,11 @@ def excel_bytes(r, rk: dict | None, f: dict | None, waktu: str) -> bytes:
         bcols = [c for c in ["code", "name", "net_lot", "porsi_net_%", "buy_avg", "sell_avg", "net_value"] if c in r.bs]
         r.bs.sort_values("net_volume", ascending=False)[bcols].to_excel(xw, sheet_name="Broker", index=False)
         r.harian.to_excel(xw, sheet_name="Bandar harian", index=False)
+        if ovn:
+            idt.tabel(ovn["bsjp"], bsjp=True).to_excel(xw, sheet_name="BSJP", index_label="Metrik")
+            idt.tabel(ovn["bpjp"], bsjp=False).to_excel(xw, sheet_name="BPJP", index_label="Metrik")
+            ovn["data_bsjp"].to_excel(xw, sheet_name="BSJP data harian", index=False)
+            ovn["data_bpjp"].to_excel(xw, sheet_name="BPJP data harian", index=False)
         if f:
             for nama, kunci in [("PnL", "pnl"), ("Neraca", "bs"), ("Arus kas", "cf")]:
                 f[kunci].to_excel(xw, sheet_name=nama, index_label="Rp miliar / rasio")
@@ -220,7 +226,7 @@ def _fund_table(df: pd.DataFrame, mark: dict, kunci: str, lebar: float):
     return _tbl(data, [first] + [rest] * len(df.columns), cell_bg=bg, font=7)
 
 
-def pdf_bytes(r, rk: dict | None, f: dict | None, waktu: str) -> bytes:
+def pdf_bytes(r, rk: dict | None, f: dict | None, waktu: str, ovn: dict | None = None) -> bytes:
     buf = io.BytesIO()
     doc = SimpleDocTemplate(buf, pagesize=A4, leftMargin=1.6 * cm, rightMargin=1.6 * cm, topMargin=1.4 * cm,
                             bottomMargin=1.4 * cm, title=f"Riset {r.params.kode}", author="Adimology Calculator")
@@ -296,6 +302,25 @@ def pdf_bytes(r, rk: dict | None, f: dict | None, waktu: str) -> bytes:
         el.append(KeepTogether([sigt, Paragraph(_safe(f"Skor {rk['skor']:+d} dari +/-{rk['skor_max']}. "
                                                       f"Verdict teknikal: {rk['verdict']} - {rk['alasan']}."), p)]))
 
+    if ovn:
+        el += [CondPageBreak(7 * cm), Paragraph(_safe(f"Statistik BPJP / BSJP ({ovn['dari']} s/d {ovn['sampai']}, candle 30 menit)"), h2)]
+        sg = ovn["sinyal"].get("bsjp")
+        if sg:
+            warna = "#DCFCE7" if sg["layak"] else "#FEF9C3"
+            el.append(_tbl([[Paragraph(_safe(
+                f"BSJP {ovn['hari_ini']['tgl']}: volume jam terakhir {sg['rvol']:.1f}x median ({sg['kelompok']}). "
+                f"Peluang gap naik {sg['p_gap']:.0%}, sentuh +1% bersih fee {sg['p_target']:.0%}. Target jual {sg['target']:,.0f} "
+                f"({sg['naik']:+.1%}); puncak paling sering {idt.label_jam(sg['jam_jual'])} ({sg['p_jam']:.0%})."
+                + ("" if sg["layak"] else " Peluang historis kurang: BSJP tidak disarankan.")), p)]], [W], header=False,
+                cell_bg={(0, 0): warna}))
+        el.append(Paragraph(_safe(f"Ambang volume tinggi: sore (15:00-16:00) >= {ovn['ambang']['sore']:,.0f} lembar; "
+                                  f"30 menit pertama >= {ovn['ambang']['buka']:,.0f} lembar. Fee {ovn['fee']:.2%} sudah diperhitungkan."), small))
+        for judul, blok, b in (("BSJP: beli close, jual sesi 1 besok", ovn["bsjp"], True),
+                               ("BPJP: beli ~09:30, jual s/d akhir sesi 1", ovn["bpjp"], False)):
+            t = idt.tabel(blok, bsjp=b)
+            data = [["Metrik"] + list(t.columns)] + [[_safe(i)] + [_safe(v) for v in row] for i, row in zip(t.index, t.values)]
+            el.append(KeepTogether([Paragraph(f"<b>{_safe(judul)}</b>", p),
+                                    _tbl(data, [W * 0.4] + [W * 0.2] * len(t.columns), font=7), Spacer(1, 4)]))
     if f:
         el += [CondPageBreak(6 * cm), Paragraph(_safe(f"Fundamental ({f['periode']})"), h2),
                Paragraph(_safe(" · ".join(x for x in [f["sektor"], f["subsektor"]] if x) +

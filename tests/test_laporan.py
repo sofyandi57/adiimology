@@ -44,6 +44,17 @@ def test_pdf_and_excel_are_built():
     assert any(str(c).endswith("DCFCE7") for c in fills)          # sel hijau ikut ke Excel
 
 
+def test_export_with_bpjp_bsjp():
+    import intraday as idt
+    from test_intraday import C, bars
+    from openpyxl import load_workbook
+    r, rk, f = _inputs()
+    o = idt.statistik(idt.get_bars(C(bars(61)), "TEST", None))
+    assert lp.pdf_bytes(r, rk, f, "x", o)[:4] == b"%PDF"
+    wb = load_workbook(io.BytesIO(lp.excel_bytes(r, rk, f, "x", o)))
+    assert {"BSJP", "BPJP", "BSJP data harian"} <= set(wb.sheetnames)
+
+
 def test_export_without_technical_or_fundamental():
     r, _, _ = _inputs()
     assert lp.pdf_bytes(r, None, None, "x")[:4] == b"%PDF"

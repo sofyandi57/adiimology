@@ -70,6 +70,9 @@ def test_app_runs_and_computes(monkeypatch, tmp_path):
     assert fund[0] == "ok" and fund[1]["periode"] == "Q2 2026" and fund[1]["nama"] == "M Cash Integrasi"
     assert any("naik" in x.value for x in at.success)                 # sorotan hijau
     assert any("Laba rugi" in m.value for m in at.markdown)
+    ovn = at.session_state["ovn"]
+    assert ovn[0] == "ok" and ovn[1]["n_hari"] == 40 and ovn[1]["sinyal"]["bsjp"] is not None
+    assert any("BSJP" in m.value for m in at.markdown)
     exp = at.session_state["export"]
     assert exp["pdf"][:4] == b"%PDF" and exp["xlsx"][:2] == b"PK" and exp["nama"].startswith("riset_MCAS_")
     # tombol Petunjuk membuka dialog tanpa error

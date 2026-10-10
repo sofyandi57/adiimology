@@ -15,6 +15,7 @@ import streamlit as st
 
 import adimology as ad
 import fundamental as fd
+import intraday as idt
 import laporan as lp
 import teknikal as tk
 
@@ -283,6 +284,9 @@ PETUNJUK = """
 - **Fundamental**: highlight laba rugi, neraca, arus kas per kuartal (8 kuartal terakhir) dan valuasi
   (PER, PBV, PS, ROE, ROA, yield). **Hijau** = tumbuh/naik, **kuning** = perlu dicek (mis. utang > aset, rugi,
   arus kas negatif, current ratio < 1).
+- **Statistik BPJP / BSJP** (bawah tab Rekomendasi): dari candle 30 menit 6 bulan, seberapa sering saham ini naik
+  besok pagi setelah volume sore tinggi (BSJP), atau naik di sesi 1 setelah volume 30 menit pertama tinggi (BPJP);
+  target jual (sudah termasuk fee) dan jam puncak yang paling sering = jendela jual. Ambang volume dalam lembar.
 - **Broker**: bandar terpilih, top net buy/sell, aliran harian bandar.
 - **Orderbook**: antrean bid/offer dan lot per papan yang dipakai rumus.
 - **Sensitivitas**: seberapa berubah target bila barang bandar / lot per papan berbeda.
@@ -370,6 +374,7 @@ if submitted:
     st.session_state.pop("tek", None)
     st.session_state.pop("fund", None)
     st.session_state.pop("export", None)
+    st.session_state.pop("ovn", None)
     if not key:
         st.session_state["res"] = ("err", "Isi API key Invezgo di sidebar atau di st.secrets.")
     else:
@@ -395,9 +400,17 @@ if submitted:
                     st.session_state["fund"] = ("ok", ambil_fundamental(CachedClient(key), r0.params.kode, r0.harga))
             except Exception as e:  # fundamental gagal tidak boleh mematikan kalkulator
                 st.session_state["fund"] = ("err", str(e) if isinstance(e, ad.AdimologyError) else f"Error tak terduga: {e}")
+            try:
+                with st.spinner("Menghitung statistik BPJP/BSJP (candle 30 menit)..."):
+                    bars_ = idt.get_bars(CachedClient(key), r0.params.kode, r0.params.tanggal_akhir)
+                    st.session_state["ovn"] = ("ok", idt.statistik(bars_, fee=r0.params.fee_beli + r0.params.fee_jual))
+            except Exception as e:  # statistik intraday gagal tidak boleh mematikan kalkulator
+                st.session_state["ovn"] = ("err", str(e) if isinstance(e, ad.AdimologyError) else f"Error tak terduga: {e}")
             tek_, fund_ = st.session_state.get("tek"), st.session_state.get("fund")
             rk_ = tek_[1] if tek_ and tek_[0] == "ok" else None
             f_ = fund_[1] if fund_ and fund_[0] == "ok" else None
+            ovn_ = st.session_state.get("ovn")
+            o_ = ovn_[1] if ovn_ and ovn_[0] == "ok" else None
             now = dt.datetime.now(ZoneInfo("Asia/Jakarta"))
             waktu = now.strftime("%Y-%m-%d %H:%M WIB")
             nama_file = f"riset_{r0.params.kode}_{now:%Y%m%d_%H%M}"
@@ -405,7 +418,7 @@ if submitted:
             with st.spinner("Menyiapkan dokumen ekspor..."):
                 for jenis, fn in (("xlsx", lp.excel_bytes), ("pdf", lp.pdf_bytes)):
                     try:
-                        exp[jenis] = fn(r0, rk_, f_, waktu)
+                        exp[jenis] = fn(r0, rk_, f_, waktu, o_)
                     except Exception as e:  # ekspor gagal tidak boleh mematikan kalkulator
                         exp[f"{jenis}_err"] = f"{type(e).__name__}: {e}"
             st.session_state["export"] = exp
@@ -484,6 +497,70 @@ def baris_rencana(rk: dict) -> list[dict]:
     ]
 
 
+def _p(v):
+    return "-" if v is None or pd.isna(v) else f"{v:.0%}"
+
+
+def tampil_bpjp_bsjp():
+    ovn = st.session_state.get("ovn")
+    if not ovn:
+        return
+    st.divider()
+    st.subheader("Statistik BPJP / BSJP")
+    if ovn[0] == "err":
+        st.error(f"Statistik BPJP/BSJP gagal: {ovn[1]}")
+        return
+    o = ovn[1]
+    h, amb = o["hari_ini"], o["ambang"]
+    st.caption(f"Candle 30 menit {o['dari']} s/d {o['sampai']} ({o['n_hari']} hari bursa). Volume tinggi = ≥ "
+               f"{idt.AMBANG_RVOL:g}x median 20 hari pada jam yang sama. Target sudah termasuk fee pulang-pergi "
+               f"{o['fee']:.2%}. Heuristik dari data historis, bukan jaminan.")
+    if not h["lengkap"]:
+        st.info(f"Data {h['tgl']} belum lengkap (pasar masih buka); volume sore hari ini belum final.", icon="⏳")
+
+    st.markdown("#### 🌇 BSJP: beli sore (close), jual besok pagi")
+    sg = o["sinyal"]["bsjp"]
+    if sg:
+        box = st.success if sg["layak"] else st.warning
+        box(f"**{h['tgl']}: volume jam terakhir {sg['rvol']:.1f}x median** → kelompok *{sg['kelompok']}* ({sg['n']} hari).  \n"
+            f"Peluang gap naik besok **{_p(sg['p_gap'])}**, peluang menyentuh +1% bersih fee **{_p(sg['p_target'])}**, "
+            f"peluang rugi bila ditahan s/d akhir sesi 1 **{_p(sg['p_rugi'])}**.  \n"
+            f"**Target jual {sg['target']:,.0f}** ({sg['naik']:+.1%} dari close {sg['ref']:,.0f}). Puncak besok paling sering di "
+            f"**{idt.label_jam(sg['jam_jual'])}** ({_p(sg['p_jam'])}) → itu jendela jual; lewat jam itu peluang naik mengecil."
+            + ("" if sg["layak"] else "  \n**Peluang historis < 50% atau median rugi setelah fee: BSJP tidak disarankan.**"),
+            icon="✅" if sg["layak"] else "⚠️")
+    st.caption(f"Ambang volume sore tinggi: ≥ **{amb['sore']:,.0f} lembar** di 15:00–16:00 (termasuk lelang penutupan).")
+    st.dataframe(idt.tabel(o["bsjp"], bsjp=True), width="stretch")
+
+    st.markdown("#### 🌅 BPJP: baca 30 menit pertama, beli ~09:30, jual sebelum sesi 1 tutup")
+    tinggi = o["bpjp"][f"Volume tinggi (≥{idt.AMBANG_RVOL:g}x)"]
+    normal = o["bpjp"]["Volume normal"]
+    if tinggi.get("n"):
+        lebih = tinggi["p_1"] > normal.get("p_1", 0)
+        (st.success if lebih and tinggi["p_1"] >= 0.5 else st.warning)(
+            f"**Aturan besok pagi:** jika volume 08:30–09:30 ≥ **{amb['buka']:,.0f} lembar**, historis ({tinggi['n']} hari): "
+            f"peluang menyentuh +1% bersih fee **{_p(tinggi['p_1'])}** (hari biasa {_p(normal.get('p_1'))}), median kenaikan "
+            f"tertinggi **{tinggi['median_naik']:+.1%}**, puncak paling sering **{idt.label_jam(tinggi['jam_puncak'])}** "
+            f"({_p(tinggi['p_jam_puncak'])}). Peluang rugi bila ditahan s/d 11:30: {_p(tinggi['p_rugi_akhir'])}."
+            + ("" if lebih else "  \nVolume pagi tinggi **tidak** terbukti menambah peluang naik untuk saham ini."),
+            icon="✅" if lebih and tinggi["p_1"] >= 0.5 else "⚠️")
+    sb = o["sinyal"]["bpjp"]
+    if sb:
+        st.caption(f"Pagi {h['tgl']}: volume 30 menit pertama {sb['rvol']:.1f}x median, harga ~09:30 {sb['ref']:,.0f}.")
+    st.dataframe(idt.tabel(o["bpjp"], bsjp=False), width="stretch")
+
+    sebaran = pd.DataFrame({"BSJP (besok)": o["bsjp"]["Semua hari"].get("sebaran_puncak", pd.Series(dtype=float)),
+                            "BPJP (hari sama)": o["bpjp"]["Semua hari"].get("sebaran_puncak", pd.Series(dtype=float))}).fillna(0) * 100
+    if not sebaran.empty:
+        fig_p = go.Figure()
+        for c, w in zip(sebaran.columns, ["#f59e0b", "#2563eb"]):
+            fig_p.add_bar(x=[idt.label_jam(j) for j in sebaran.index], y=sebaran[c], name=c, marker_color=w)
+        fig_p.update_layout(height=260, barmode="group", margin=dict(l=10, r=10, t=30, b=10), yaxis_title="% hari",
+                            title=dict(text="Jam puncak harga sesi 1 (kapan sebaiknya jual)", font=dict(size=13)),
+                            legend=dict(orientation="h", y=1.15))
+        st.plotly_chart(fig_p, width="stretch")
+
+
 def rp_milyar(x):
     return "-" if x is None or pd.isna(x) else f"Rp{x / 1e9:+,.2f} M"
 
@@ -533,6 +610,7 @@ with tab_rek:
         catatan = ("MA200 belum tersedia (data < 200 hari bursa). " if rk["ma"][200] is None else "")
         st.caption(f"{catatan}Data {rk['n_bar']} hari bursa s/d {rk['tgl']}. Support/resistance dari swing high/low "
                    "±5 hari (250 hari terakhir), SL = support − 1 ATR14. Edukasi, bukan ajakan transaksi.")
+    tampil_bpjp_bsjp()
 
 
 with tab_fund:

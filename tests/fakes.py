@@ -30,6 +30,8 @@ class FakeClient(ad.InvezgoClient):
             return FIN[params["statement"]]
         if "/keystat/" in path:
             return FIN["KS"]
+        if "/chart/multi-time/" in path:
+            return INTRADAY
         if "/information/" in path:
             return {"code": "MCAS", "name": "M Cash Integrasi", "sector": "Teknologi", "subsector": "Perangkat lunak"}
         raise AssertionError(path)
@@ -75,3 +77,21 @@ FIN = {
                  dict(zip(_KS, [8e9, 15e9, 20e9, 30e9, 9e9, 19e9]))}),
     "KS": panel({"Saham": {k: 868e6 for k in _KS}}),
 }
+
+
+def _intraday(n_hari=40):
+    import datetime as _dt
+    jam = ["08:30", "09:00", "09:30", "10:00", "10:30", "11:00", "11:30", "13:30", "14:00", "14:30", "15:00", "15:30", "16:00"]
+    rows, d = [], _dt.date(2026, 8, 3)
+    for i in range(n_hari):
+        while d.weekday() >= 5:
+            d += _dt.timedelta(days=1)
+        for j in jam:
+            o = 260 + (i % 5)
+            rows.append({"date": f"{d}T{j}:00.000Z", "open": o, "high": o + (6 if j == "09:00" and i % 2 else 1),
+                         "low": o - 1, "close": o, "volume": 100000 * (3 if j >= "15:00" and i % 2 == 0 else 1)})
+        d += _dt.timedelta(days=1)
+    return rows
+
+
+INTRADAY = _intraday()
