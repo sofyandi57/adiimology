@@ -8,13 +8,14 @@ Target harga metode Adimology dari data **broker summary + orderbook Invezgo**. 
 - `fundamental.py`: tab Fundamental (PnL, neraca, arus kas per kuartal dari data YTD Invezgo, valuasi, peringatan kuning / sorotan hijau)
 - `laporan.py`: tombol Export: PDF dokumen riset (keputusan BELI / TUNGGU / HINDARI-JUAL) dan Excel (semua data per sheet)
 - `intraday.py`: statistik BPJP/BSJP dari candle 30 menit (volume pagi/sore vs pergerakan sesi 1 berikutnya, target & jam jual)
+- `dinamika.py`: kerangka bukti bandarmologi (inventory broker harian: konsistensi, respons harga, absorpsi supply, breakout gagal, estimasi modal, 6 dimensi, tingkat bukti)
 - `audit.py`: satu fungsi posisi/risiko (lot, rugi di stop incl. fee), validasi laporan (rekonsiliasi angka, kesegaran data), parser aksi korporasi, daftar batasan data/endpoint
 - `ringkas.py`: tombol Unduh TXT: ringkasan padat (±7-12 KB) untuk dianalisa AI, termasuk statistik historis harga (peluang naik, sentuh target sebelum stop)
 - `hengky.py`: aturan disiplin trading dari materi Ko Hengky (Remora): checklist uptrend/likuid/level, harga-volume, bid-offer, rencana support/breakout (stop 1 tick), SID, pra-open
 - `bandar.py`: penilaian bandarmologi berbasis bukti (7 kriteria + deteksi jebakan); target Adimology diperlakukan sebagai skenario karena backtest tidak menunjukkan edge
 - `aliran.py`: konfirmasi aliran: asing, pasar nego, konsistensi bandar 1/3/7/20 hari, afiliasi broker dengan pemegang saham >= 5%, minat ritel (SID + aliran broker ritel XL/XC/PD/CC/YP)
 - `teknikal.py`: analisa teknikal tab Rekomendasi (support/resistance, MA 5/20/50/100/200, RSI, MACD, ATR, bandar value)
-- `tests/`: 90 tes (audit, fundamental FY/LTM, minat ritel, ringkasan TXT, Hengky, bandar jangka panjang, penilaian bandar, backtest, login, aliran, teknikal, BPJP/BSJP, fundamental, ekspor, rumus, fraksi bertingkat, kasus MCAS sama dengan output Colab, UI smoke test)
+- `tests/`: 99 tes (kerangka bukti bandar, audit, fundamental FY/LTM, minat ritel, ringkasan TXT, Hengky, bandar jangka panjang, penilaian bandar, backtest, login, aliran, teknikal, BPJP/BSJP, fundamental, ekspor, rumus, fraksi bertingkat, kasus MCAS sama dengan output Colab, UI smoke test)
 
 ## Jalankan lokal
 ```bash

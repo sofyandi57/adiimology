@@ -290,7 +290,8 @@ def checklist(r, rk, pv, obb, rn, prof, nilai, min_nilai_m: float = 5.0) -> dict
             ks.append(_c("Bid-offer terbaca (likuid 3 papan, tanpa dinding)", YA, "3 papan di kedua sisi, tidak ada dinding mencolok", False, "D5"))
 
     kat = nilai["kategori"]
-    ks.append(_c("Analisa transaksi (bandar) tidak melawan", YA if kat == "AKUMULASI KUAT" else TIDAK if kat.startswith("WASPADA") else NETRAL,
+    gt = bd.gate(nilai)
+    ks.append(_c("Analisa transaksi (bandar) tidak melawan", YA if gt == "kuat" else TIDAK if gt == "waspada" else NETRAL,
                  f"penilaian bandarmologi: {kat}", False, "A, B"))
     if rk and rn:
         tp_pct = rk["tp1"] / rk["harga"] - 1
@@ -298,7 +299,7 @@ def checklist(r, rk, pv, obb, rn, prof, nilai, min_nilai_m: float = 5.0) -> dict
         ks.append(_c("Target menutup fee (≥ 3x biaya pulang-pergi)", YA if tp_pct >= batas else TIDAK,
                      f"TP1 {tp_pct:+.1%} vs 3x fee {batas:.1%}; harga impas {rn['impas']:,.0f} ({rn['impas_pct']:+.2%})", False, "A"))
     if pv:
-        spike = pv["chg_n"] >= 0.15 and kat != "AKUMULASI KUAT"
+        spike = pv["chg_n"] >= 0.15 and gt != "kuat"
         ks.append(_c("Tidak ada tanda exit liquidity (info bagus + transaksi jelek)", TIDAK if spike else YA,
                      f"harga {pv['chg_n']:+.0%} dalam {pv['n']} hari; bukti bandar {kat}" if spike else
                      f"harga {pv['chg_n']:+.0%} dalam {pv['n']} hari", False, "A, B"))

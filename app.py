@@ -17,6 +17,7 @@ import adimology as ad
 import aliran as al
 import audit as au
 import bandar as bd
+import dinamika as dn
 import fundamental as fd
 import hengky as hk
 import ringkas as rg
@@ -220,23 +221,73 @@ def ringkas(r: ad.Result) -> dict:
 
 def tampil_penilaian(r: ad.Result, nilai: dict) -> None:
     kat = nilai["kategori"]
-    box, ikon = {"AKUMULASI KUAT": (st.success, "🟢"), "AKUMULASI LEMAH / BELUM SEARAH": (st.info, "🔵"),
+    box, ikon = {dn.K_TERKONFIRMASI: (st.success, "🟢"), dn.K_TERINDIKASI: (st.info, "🔵"), dn.K_ABSORPSI: (st.info, "🟣"),
+                 dn.K_TIDAK: (st.warning, "⚪"), "AKUMULASI KUAT": (st.success, "🟢"), "AKUMULASI LEMAH / BELUM SEARAH": (st.info, "🔵"),
                  "TIDAK ADA BUKTI AKUMULASI": (st.warning, "⚪")}.get(kat, (st.error, "🚨"))
-    box(f"**{r.params.kode} · Penilaian bandarmologi: {kat}**  \nSkor {nilai['skor']:+d} dari {nilai['skor_maks']} "
-        "kriteria terukur. Status positif hanya bila bukti independen searah; satu jebakan cukup untuk WASPADA.", icon=ikon)
+    if nilai.get("dinamis"):
+        d = nilai["dinamis"]
+        box(f"**{r.params.kode} · Bandarmologi (kerangka bukti): {kat}**  \nTingkat bukti: **{nilai['tingkat']}** · keyakinan **{d['keyakinan']}** · "
+            f"{d['alasan']}.  \nIni hipotesis dari aliran broker, bukan bukti identitas/niat bandar.", icon=ikon)
+    else:
+        box(f"**{r.params.kode} · Bandarmologi (checklist): {kat}**  \nSkor {nilai['skor']:+d} dari {nilai['skor_maks']} kriteria terukur. "
+            "Kerangka bukti dinamis tidak tersedia (lihat catatan di bawah).", icon=ikon)
     for j in nilai["jebakan"]:
         st.error(j, icon="⚠️")
     for i_ in nilai["info"]:
         st.info(i_, icon="ℹ️")
-    st.dataframe(bd.tabel(nilai), hide_index=True, width="stretch",
-                 column_config={"Bukti": st.column_config.TextColumn(width="large")})
-    al_ = st.session_state.get("aliran")
-    catatan = "* = kriteria inti (wajib terukur dan tidak negatif untuk AKUMULASI KUAT)."
-    if not nilai["lengkap"]:
-        catatan += " Sebagian kriteria tidak diukur: aktifkan *Aliran lanjutan* di sidebar agar penilaian lengkap."
-    if al_ and al_[0] == "err":
-        catatan += f" Aliran lanjutan gagal: {al_[1]}"
-    st.caption(catatan)
+    with st.expander("Checklist kriteria pendukung (bukan skor utama)"):
+        st.dataframe(bd.tabel(nilai), hide_index=True, width="stretch", column_config={"Bukti": st.column_config.TextColumn(width="large")})
+        al_ = st.session_state.get("aliran")
+        catatan = "* = kriteria inti."
+        if not nilai["lengkap"]:
+            catatan += " Sebagian kriteria tidak diukur: aktifkan *Aliran lanjutan* di sidebar."
+        if al_ and al_[0] == "err":
+            catatan += f" Aliran lanjutan gagal: {al_[1]}"
+        st.caption(catatan)
+    din = st.session_state.get("dinamis")
+    if din and din[0] == "err":
+        st.warning(f"Kerangka bukti dinamis gagal: {din[1]}")
+    elif din:
+        tampil_dinamika(din[1])
+
+
+def tampil_dinamika(d: dict) -> None:
+    if not d["dimensi"]:
+        st.info(f"Kerangka bukti: {d['alasan']}.")
+        return
+    st.markdown("##### Enam dimensi bukti (bobot = usulan desain, bukan probabilitas)")
+    st.dataframe(pd.DataFrame([{"Dimensi": x["dimensi"], "Bobot": x["bobot"], "Skor": x["skor"], "Mendukung": "; ".join(x["mendukung"]) or "-",
+                                "Menentang": "; ".join(x["menentang"]) or "-"} for x in d["dimensi"]]),
+                 hide_index=True, width="stretch", column_config={
+        "Bobot": st.column_config.NumberColumn(format="percent"), "Skor": st.column_config.ProgressColumn(min_value=0, max_value=100, format="%.0f"),
+        "Mendukung": st.column_config.TextColumn(width="large"), "Menentang": st.column_config.TextColumn(width="large")})
+    t = d["tabel"]
+    st.markdown(f"##### Kelompok tetap {', '.join(d['grup'])} diukur sepadan di semua jendela (denominator = volume total jendela yang sama)")
+    st.dataframe(t, hide_index=True, width="stretch", column_config={
+        "jendela": "Jendela (hari)", "net_lot": st.column_config.NumberColumn("Net (lot)", format="%,.0f"),
+        "net_rp_perkiraan": st.column_config.NumberColumn("Net (Rp, perkiraan)", format="%,.0f"),
+        "pct_volume": st.column_config.NumberColumn("% volume", format="percent"), "hari_net_positif": st.column_config.NumberColumn("Hari net beli", format="percent"),
+        "ret_harga": st.column_config.NumberColumn("Return harga", format="percent"),
+        "respons_per_1pct": st.column_config.NumberColumn("Return per 1% volume", format="%.2f")})
+    mo = d["modal"]
+    if mo.get("ada"):
+        pt = dn.posisi_tertekan(d)
+        st.markdown(f"**Estimasi modal transaksi bersih kelompok** (proksi dari rata-rata harga beli, BUKAN harga pokok): {mo['rendah']:,.0f} – {mo['tinggi']:,.0f} "
+                    f"(pusat {mo['pusat']:,.0f}); harga {mo['harga_vs_pusat']:+.1%} dari pusat ({mo['harga_vs_rentang']}). **{pt[0]}**: {pt[1]}.")
+    else:
+        st.markdown(f"**Estimasi modal:** tidak tersedia ({mo.get('alasan')}).")
+    s_, b_ = d["supply"], d["breakout"]
+    st.caption(f"Penyerapan supply: {s_['n_absorpsi']} dari {s_['n_jual_besar']} hari penjualan besar harga bertahan; {s_['n_volume_besar_harga_diam']} hari volume besar harga diam "
+               f"tanpa pembeli kelompok; {s_['n_hari_distribusi']} hari distribusi (20h); breakout {b_['n_gagal']} gagal dari {b_['n']} (60h). "
+               f"Korelasi flow-harga harian {d['respons']['corr_sama_hari']:+.2f}" if pd.notna(d["respons"]["corr_sama_hari"]) else "Korelasi flow-harga tidak dapat dihitung.")
+    with st.expander("Empat keluaran dan tujuh pertanyaan"):
+        st.markdown("**Bukti yang mendukung:** " + ("; ".join(d["mendukung"]) or "tidak ada"))
+        st.markdown("**Bukti yang menentang:** " + ("; ".join(d["menentang"]) or "tidak ada"))
+        st.markdown(f"**Tingkat keyakinan:** {d['keyakinan']} (tingkat bukti: {d['tingkat']}; 'terkonfirmasi statistik' tidak diberikan)")
+        st.markdown("**Kondisi pembatalan:** " + "; ".join(d["pembatalan"]))
+        k_ = (st.session_state.get("hengky") or (None, None))
+        st.markdown("\n".join(f"- **{a}:** {b}" for a, b in dn.tujuh_pertanyaan(d, "lihat keputusan di PDF/TXT")))
+    st.caption(dn.CATATAN_BOBOT)
 
 
 def tampil_hengky(r, api_key) -> None:
@@ -334,6 +385,10 @@ def tampil_hengky(r, api_key) -> None:
             st.info(f"{p['waktu']}: IEP belum tersedia (di luar sesi pra-pembukaan). Terakhir {p['last']:,.0f}, bid {p['bid']:,.0f} / offer {p['offer']:,.0f}.")
 
 
+LABEL_MODAL = {"NYANGKUT": "harga di bawah estimasi modal (belum tentu posisi tertekan)", "IMPAS": "harga dekat estimasi modal",
+               "TIDAK NYANGKUT": "harga di atas estimasi modal", "TIDAK ADA AKUMULATOR BERSIH": "tidak ada akumulator bersih"}
+
+
 def tampil_volume_dan_b200(r: ad.Result) -> None:
     v = st.session_state.get("vol")
     if v:
@@ -349,13 +404,13 @@ def tampil_volume_dan_b200(r: ad.Result) -> None:
     b = st.session_state.get("b200")
     if not b:
         return
-    st.markdown("#### 🏦 Bandar jangka panjang: akumulasi/distribusi dan nyangkut atau tidak")
+    st.markdown("#### 🏦 Broker jangka panjang: arah net dan posisi harga terhadap estimasi modal transaksi bersih")
     if b[0] == "err":
         st.warning(f"Info bandar jangka panjang gagal: {b[1]}")
         return
     p = b[1]
     box = {"NYANGKUT": st.warning, "IMPAS": st.info, "TIDAK NYANGKUT": st.success}.get(p["nyangkut"], st.error)
-    box(f"**{r.params.kode} · {p['dari']} s/d {p['sampai']} ({p['hari']} hari bursa): {p['status']} · {p['nyangkut']}**  \n"
+    box(f"**{r.params.kode} · {p['dari']} s/d {p['sampai']} ({p['hari']} hari bursa): arah net top-5 {p['status'].lower()} · {LABEL_MODAL.get(p['nyangkut'], p['nyangkut'])}**  \n"
         f"{p['keterangan']}.  \nNet top-5 akumulator vs top-5 distributor: {p['net_acc5_value'] / 1e9:+,.1f} M vs "
         f"{p['net_dist5_value'] / 1e9:+,.1f} M. Konsentrasi: {p['konsentrasi']['status']}.", icon="🏦")
     cfg = {"net_lot": st.column_config.NumberColumn("Net periode (lot)", format="%,.0f"),
@@ -459,6 +514,12 @@ def ambil_aliran(client: ad.InvezgoClient, r: ad.Result) -> dict:
 
 
 PETUNJUK = """
+**Bandarmologi = kerangka bukti** (Ringkasan): bukan skor tunggal. Kelompok broker tetap (top-3 akumulator non-ritel) diukur sepadan di
+jendela 1/3/7/20/60/200 hari; enam dimensi (konsistensi aliran, konsentrasi, estimasi modal transaksi, respons harga, volume & struktur, risiko
+distribusi). Hasilnya klasifikasi: Akumulasi terkonfirmasi (perilaku harga) / terindikasi / Distribusi terindikasi / Absorpsi supply / Tidak
+konklusif, dengan bukti mendukung, menentang, keyakinan, dan kondisi pembatalan. "Nyangkut" diganti: estimasi modal transaksi bersih (rentang);
+"posisi tertekan" hanya bila harga di bawah seluruh rentang, aliran konsisten, dan harga turun. Bobot dimensi = usulan desain, belum diuji.
+
 **Cara membaca (penting)**
 - Mulai dari **Penilaian bandarmologi** di Ringkasan: AKUMULASI KUAT hanya bila konsentrasi beli, konsistensi
   bandar, tidak ada distribusi, harga dekat modal bandar, asing, nego, dan fase harga **searah**. Satu **jebakan**
@@ -616,6 +677,7 @@ if submitted:
     st.session_state.pop("hengky", None)
     st.session_state.pop("pra_open", None)
     st.session_state.pop("ritel", None)
+    st.session_state.pop("dinamis", None)
     if not key:
         st.session_state["res"] = ("err", "Isi API key Invezgo di sidebar atau di st.secrets.")
     else:
@@ -643,10 +705,19 @@ if submitted:
                 except Exception as e:  # aliran gagal tidak boleh mematikan kalkulator
                     st.session_state["aliran"] = ("err", str(e) if isinstance(e, ad.AdimologyError) else f"Error tak terduga: {e}")
             ali_, tek_n = st.session_state.get("aliran"), st.session_state.get("tek")
-            st.session_state["nilai"] = bd.penilaian(r0, ali_[1] if ali_ and ali_[0] == "ok" else None,
-                                                     tek_n[1] if tek_n and tek_n[0] == "ok" else None)
             rk_n = tek_n[1] if tek_n and tek_n[0] == "ok" else None
             src_n = rk_n["ind"] if rk_n else r0.chart
+            try:
+                with st.spinner("Menganalisa dinamika bandar (aliran harian, respons harga, absorpsi)..."):
+                    raw_d = dn.ambil(CachedClient(key), r0.params.kode, src_n["tgl"].tolist(), r0.params.broker_dikecualikan,
+                                     r0.params.investor, r0.params.market)
+                    st.session_state["dinamis"] = ("ok", dn.analisa(raw_d["inv"], r0.harga, r0.params.broker_dikecualikan, r0.konsentrasi,
+                                                                    hk.pv_baca(src_n), raw_d["summaries"], raw_d["inv200"]))
+            except Exception as e:  # dinamika bandar gagal tidak boleh mematikan kalkulator
+                st.session_state["dinamis"] = ("err", str(e) if isinstance(e, ad.AdimologyError) else f"Error tak terduga: {e}")
+            din_ = st.session_state.get("dinamis")
+            st.session_state["nilai"] = bd.penilaian(r0, ali_[1] if ali_ and ali_[0] == "ok" else None, rk_n,
+                                                     din_[1] if din_ and din_[0] == "ok" else None)
             st.session_state["vol"] = bd.volume_rata(src_n)
             if b200_on:
                 try:
@@ -698,13 +769,13 @@ if submitted:
             with st.spinner("Menyiapkan dokumen ekspor..."):
                 for jenis, fn in (("xlsx", lp.excel_bytes), ("pdf", lp.pdf_bytes)):
                     try:
-                        exp[jenis] = fn(r0, rk_, f_, waktu, o_, a_, b_, hk_s, st.session_state.get("ritel"))
+                        exp[jenis] = fn(r0, rk_, f_, waktu, o_, a_, b_, hk_s, st.session_state.get("ritel"), (st.session_state.get("nilai") or {}).get("dinamis"))
                     except Exception as e:  # ekspor gagal tidak boleh mematikan kalkulator
                         exp[f"{jenis}_err"] = f"{type(e).__name__}: {e}"
                 try:
                     exp["txt"] = rg.txt_bytes(r0, rk_, f_, waktu, o_, a_, b_, hk_s, st.session_state.get("nilai"), st.session_state.get("vol"),
                                          st.session_state.get("ritel"),
-                                         status={k_: st.session_state.get(k_) for k_ in ("tek", "fund", "ovn", "aliran", "b200", "hengky")},
+                                         status={k_: st.session_state.get(k_) for k_ in ("tek", "fund", "ovn", "aliran", "b200", "hengky", "dinamis")},
                                          snapshot=now.replace(tzinfo=None))
                 except Exception as e:
                     exp["txt_err"] = f"{type(e).__name__}: {e}"

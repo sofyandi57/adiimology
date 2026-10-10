@@ -1,6 +1,7 @@
 """Smoke test UI Streamlit dengan requests.get dipalsukan."""
 import adimology as ad
 import bandar as bd
+import numpy as np
 import pandas as pd
 import requests
 from streamlit.testing.v1 import AppTest
@@ -91,9 +92,12 @@ def test_app_runs_and_computes(monkeypatch, tmp_path):
     assert b200[0] == "err" and "kurang dari 20 hari" in b200[1]      # data tiruan hanya 5 hari harga; sukses diuji di test_bandar_panjang
     assert "hari_terakhir" in at.session_state["vol"]
     assert any("Volume rata-rata harian" in m.value for m in at.markdown)
+    din = at.session_state["dinamis"]
+    assert din[0] == "err" and "kurang dari 20 hari" in din[1]                 # data tiruan 5 hari; sukses diuji di test_dinamika
+    assert b"[GAGAL] kerangka bukti bandarmologi" in at.session_state["export"]["txt"] and b"TIDAK KONKLUSIF" in at.session_state["export"]["txt"]
     nilai = at.session_state["nilai"]
     assert nilai["kategori"] in bd.KATEGORI and len(nilai["kriteria"]) == 7
-    assert any("Penilaian bandarmologi" in x.value for x in [*at.success, *at.info, *at.warning, *at.error])
+    assert any("Bandarmologi (" in x.value for x in [*at.success, *at.info, *at.warning, *at.error])
     assert any("Kriteria" in d.value.columns for d in at.dataframe)
     aliran = at.session_state["aliran"]
     assert aliran[0] == "ok", aliran
@@ -149,6 +153,28 @@ def test_b200_success_renders(monkeypatch):
     [b for b in at.button if b.label == "Hitung"][0].click().run()
     assert not at.exception, [e.value for e in at.exception]
     assert at.session_state["b200"][0] == "ok"
-    assert any("NYANGKUT" in w.value for w in at.warning)
+    assert any("harga di bawah estimasi modal" in w.value for w in at.warning)
     assert any({"code", "floating"} <= set(d.value.columns) for d in at.dataframe)
     assert at.session_state["export"]["pdf"][:4] == b"%PDF"
+
+
+def test_dinamika_framework_renders_and_feeds_report(monkeypatch):
+    import dinamika as dn
+    from test_dinamika import _data, _summ
+    fc = mcas()
+    monkeypatch.setattr(requests, "get", lambda url, headers=None, params=None, timeout=None: R(fc.get(url.replace(ad.BASE_URL, ""), params)))
+    monkeypatch.setenv("INVEZGO_API_KEY", "dummy")
+    rng = np.random.default_rng(1)
+    price = 1000 * np.cumprod(1 + 0.0016 + rng.normal(0, 0.003, 60))
+    flows = {"AA": np.full(60, 30_000.0) + rng.normal(0, 3000, 60), "BB": np.full(60, 10_000.0), "SS": np.full(60, -8_000.0)}
+    monkeypatch.setattr(dn, "ambil", lambda *a, **k: dict(inv=_data(price, flows), inv200=None, summaries={20: _summ(float(price[-20])), 60: _summ(float(price[0]))}))
+    at = open_app(monkeypatch)
+    [b for b in at.button if b.label == "Hitung"][0].click().run()
+    assert not at.exception, [e.value for e in at.exception]
+    d = at.session_state["dinamis"]
+    assert d[0] == "ok" and d[1]["kategori"] in dn.KATEGORI and at.session_state["nilai"]["dinamis"] is d[1]
+    assert any("Enam dimensi bukti" in m.value for m in at.markdown)
+    assert any({"Dimensi", "Bobot", "Skor"} <= set(df.value.columns) for df in at.dataframe)
+    txt = at.session_state["export"]["txt"]
+    assert b"## BANDARMOLOGI: KERANGKA BUKTI" in txt and b"bukti_mendukung=" in txt and b"kondisi_pembatalan=" in txt and b"terkonfirmasi_statistik=TIDAK" in txt
+    assert at.session_state["export"]["pdf"][:4] == b"%PDF" and at.session_state["export"]["xlsx"][:2] == b"PK"

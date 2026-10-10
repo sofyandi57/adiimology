@@ -122,7 +122,10 @@ STRUKTURAL = [
     "[STRUKTURAL] Orderbook historis hanya sejak 2026-03-25 dan berupa snapshot: antrean palsu/di-reload tidak terbaca. Aliran intraday broker tidak tersedia.",
     "[STRUKTURAL] SID dari KSEI bulanan dan terlambat; harga tidak disesuaikan untuk dividen/rights (hanya split yang terdeteksi otomatis).",
     "[STRUKTURAL] Biaya, slippage, dan pajak aktual tidak diketahui: fee diasumsikan beli 0,15% dan jual 0,25%; likuiditas keluar di harga stop tidak dijamin (gap).",
-    "[STRUKTURAL] Backtest: 4 saham, satu periode, tanpa walk-forward/out-of-sample; aturan penilaian bandar dan Hengky belum diuji.",
+    "[STRUKTURAL] Inventory broker = net kumulatif harian hanya untuk top-15 broker: broker di luar daftar tidak terlihat; kelompok broker adalah PROKSI, bukan pihak tunggal; "
+    "tidak ada data per nasabah, posisi aktual yang masih dipegang, maupun transaksi antar-nasabah satu broker (cross).",
+    "[STRUKTURAL] Kinerja prediktif per broker/pola (broker informatif vs sekadar besar) dan nilai tambah bandarmologi dibanding harga-volume saja BELUM diuji (butuh backtest out-of-sample).",
+    "[STRUKTURAL] Backtest: 4 saham, satu periode, tanpa walk-forward/out-of-sample; kerangka bukti bandarmologi dan aturan Hengky belum diuji.",
 ]
 
 
@@ -130,7 +133,7 @@ def batasan(status: dict, r, rk, f, ovn, alr, b200, hk_, ritel) -> list[str]:
     """Kekurangan data/endpoint PADA SNAPSHOT INI + batasan struktural. status[k] = ('ok'|'err', payload) dari proses Hitung."""
     out = []
     nama = {"tek": "analisa teknikal", "fund": "laporan keuangan", "ovn": "statistik BPJP/BSJP (candle 30 menit)", "aliran": "aliran asing/nego/konsistensi/afiliasi",
-            "b200": "bandar jangka panjang", "hengky": "aturan Hengky"}
+            "b200": "bandar jangka panjang", "hengky": "aturan Hengky", "dinamis": "kerangka bukti bandarmologi (inventory broker)"}
     for k, label in nama.items():
         v = status.get(k)
         if v is not None and v[0] == "err":

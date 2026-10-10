@@ -13,6 +13,7 @@ import datetime as dt
 import adimology as ad
 import audit as au
 import bandar as bd
+import dinamika as dn
 import hengky as hk
 import laporan as lp
 
@@ -223,7 +224,7 @@ def _data_lines(r, rk, f, ovn, alr, b200, hk_, nilai, vol, ritel, stat) -> list[
     for nm, st_, why in kecocokan(r, rk, f, ovn, hk_, None, stat):
         add(f"{nm}={st_} ({why})")
 
-    add("## BANDAR (window)")
+    add("## BANDAR (window) -- periode & definisi sendiri (top-1 broker, top-3 vs top-15 pada window ini); tidak sepadan dengan bagian 200H")
     add(f"window={r.tgl_awal}..{r.tgl_akhir} ({r.params.window_hari}h) bandar={r.bandar['code']} net={_i(r.bandar['net_lot'])}lot porsi={r.bandar['porsi']:.1f}% "
         f"avg={_f(r.bandar['avg'])} floating={_p(r.floating)} net_hari_terakhir={_i(r.net_terakhir)} distribusi={'ya' if r.distribusi else 'tidak'}")
     k = r.konsentrasi or {}
@@ -246,7 +247,7 @@ def _data_lines(r, rk, f, ovn, alr, b200, hk_, nilai, vol, ritel, stat) -> list[
             add("afiliasi>=5%=" + ("; ".join(f"{x['name']}({x['format_securities']},{x['next_pct']:.1f}%)" for x in af["cocok"][:2]) or "tidak"))
 
     if b200:
-        add(f"## BANDAR {b200['hari']}H ({b200['dari']}..{b200['sampai']})")
+        add(f"## BANDAR {b200['hari']}H ({b200['dari']}..{b200['sampai']}) -- top-5 non-ritel PER PERIODE (definisi berbeda dari kelompok tetap di atas dan dari konsentrasi window): JANGAN dibandingkan langsung")
         add(f"[INF] arah={b200['status'].lower()} {_lbl_nyangkut(b200['nyangkut'])} | [OBS] modal_top3={_f(b200['modal_top3'])} net_top3={_i(b200['net_top3_lot'])}lot "
             f"harga_vs_modal={_p(b200['floating_top3'])} acc5/dist5={_m(b200['net_acc5_value'])}/{_m(b200['net_dist5_value'])} konsentrasi={b200['konsentrasi']['status']}")
         add("akumulator(kode:net_lot@avg|harga_vs_avg)=" + ",".join(f"{x['code']}:{_i(x['net_lot'])}@{_i(x['avg'])}|{_p(x['floating'], 0)}" for x in b200["akumulator"]))
@@ -337,17 +338,60 @@ EDGE = ("strategi_teruji=sinyal Adimology (SETUP TERPENUHI -> target realistis v
 
 
 def _lbl_bandar(k: str) -> str:
-    return {"AKUMULASI KUAT": "INDIKASI AKUMULASI KUAT (inferensi dari kriteria searah, bukan bukti)",
-            "AKUMULASI LEMAH / BELUM SEARAH": "INDIKASI AKUMULASI LEMAH (belum searah)",
+    return {dn.K_TERKONFIRMASI: "AKUMULASI TERKONFIRMASI oleh perilaku harga (hipotesis dari aliran broker; bukan bukti identitas/niat bandar)",
+            dn.K_TERINDIKASI: "AKUMULASI TERINDIKASI (aliran beli ada; respons harga belum mengonfirmasi)",
+            dn.K_DISTRIBUSI: "DISTRIBUSI TERINDIKASI", dn.K_ABSORPSI: "ABSORPSI SUPPLY (penjualan besar tidak menekan harga)",
+            dn.K_TIDAK: "TIDAK KONKLUSIF", "AKUMULASI KUAT": "INDIKASI AKUMULASI KUAT (checklist lama; kerangka dinamis tidak tersedia)",
+            "AKUMULASI LEMAH / BELUM SEARAH": "INDIKASI AKUMULASI LEMAH (checklist lama)",
             "TIDAK ADA BUKTI AKUMULASI": "TIDAK ADA BUKTI AKUMULASI"}.get(k, "INDIKASI DISTRIBUSI / JEBAKAN (waspada)")
 
 
 def _lbl_nyangkut(k: str) -> str:
-    return {"NYANGKUT": "INDIKASI NYANGKUT (perkiraan dari modal rata-rata broker; waktu beli tidak diketahui)",
-            "IMPAS": "DEKAT IMPAS (perkiraan)", "TIDAK NYANGKUT": "INDIKASI TIDAK NYANGKUT (perkiraan)"}.get(k, k)
+    return {"NYANGKUT": "harga DI BAWAH estimasi modal transaksi bersih broker (belum tentu posisi tertekan; waktu beli tidak diketahui)",
+            "IMPAS": "harga dekat estimasi modal (perkiraan)", "TIDAK NYANGKUT": "harga di atas estimasi modal (perkiraan)"}.get(k, k)
 
 
-def _meta(r, rk, f, ovn, alr, b200, hk_, ritel, v, snapshot, status) -> list[str]:
+def _bandar_lines(din: dict | None) -> list[str]:
+    L = ["## BANDARMOLOGI: KERANGKA BUKTI [OBS = angka, INF = hipotesis]"]
+    if not din:
+        L.append("tidak tersedia (inventory broker gagal/ dinonaktifkan): bandarmologi hanya dari checklist lama; kesimpulan akumulasi/distribusi TIDAK KONKLUSIF.")
+        return L
+    L.append(f"[INF] kategori={din['kategori']} tingkat_bukti={din['tingkat']} keyakinan={din['keyakinan']} alasan={din['alasan']}")
+    if not din["dimensi"]:
+        return L
+    L.append(f"[OBS] kelompok_tetap(top-3 akumulator non-ritel, 60h)={','.join(f'{k}({din['nama'].get(k, k)[:18]})' for k in din['grup'])} "
+             f"distributor={','.join(din['grup_dist']) or '-'}; denominator=volume total tiap jendela; n_hari={din['n_hari']}")
+    L.append("dimensi|bobot|skor|mendukung|menentang  (bobot=usulan desain; BUKAN probabilitas)")
+    for x in din["dimensi"]:
+        L.append(f"{x['dimensi']}|{x['bobot']:.0%}|{x['skor']:.0f}|{'; '.join(x['mendukung'])[:230] or '-'}|{'; '.join(x['menentang'])[:230] or '-'}")
+    L.append("jendela_h|net_lot|net_Rp~(lot*close)|%vol|hari_net_beli|ret_harga|ret_per_1%vol")
+    for r_ in din["tabel"].itertuples():
+        L.append(f"{r_.jendela}|{_i(r_.net_lot)}|{_m(r_.net_rp_perkiraan)}|{_p(r_.pct_volume, 2)}|{_pu(r_.hari_net_positif)}|{_p(r_.ret_harga)}|{_f(r_.respons_per_1pct, 2)}")
+    L.append("[OBS] net_kelompok_harian_10h(lot)=" + ",".join(_i(x) for x in din["net_harian_10h"]) + f" (kumulatif {_i(din['kum_10h'])})")
+    mo = din["modal"]
+    if mo.get("ada"):
+        pt = dn.posisi_tertekan(din)
+        L.append(f"[OBS] estimasi_modal_transaksi_bersih(proksi, BUKAN harga pokok): rentang={_i(mo['rendah'])}-{_i(mo['tinggi'])} pusat={_i(mo['pusat'])} lebar={_pu(mo['lebar'])} "
+                 f"per_jendela(avg_beli|buy/sell/imbalance Rp)=" + ",".join(
+                     f"{x['jendela']}h:{_i(x['avg_beli'])}|{_m(x.get('buy_value'))}/{_m(x.get('sell_value'))}/{_f(x.get('imbalance'), 2)}" for x in mo["per_jendela"]) + f" harga_vs_pusat={_p(mo['harga_vs_pusat'])} ({mo['harga_vs_rentang']})")
+        L.append(f"[INF] posisi_tertekan={pt[0]}: {pt[1]}")
+    else:
+        L.append(f"estimasi_modal=tidak tersedia ({mo.get('alasan')})")
+    sp, bo, rs = din["supply"], din["breakout"], din["respons"]
+    L.append(f"[OBS] supply: jual_besar={sp['n_jual_besar']} diserap={sp['n_absorpsi']} volume_besar_harga_diam={sp['n_volume_besar_harga_diam']} hari_distribusi_20h={sp['n_hari_distribusi']}; "
+             f"breakout_60h={bo['n']} gagal={bo['n_gagal']}; korelasi_flow_harga(sama hari/besok)={_f(rs['corr_sama_hari'], 2)}/{_f(rs['corr_hari_berikut'], 2)}; "
+             f"konsistensi: hari_net_beli_20h={_pu(din['konsistensi']['frac_pos'])} run_terpanjang={din['konsistensi']['run_terpanjang']} pergantian_arah={din['konsistensi']['pergantian_arah']}")
+    L.append("bukti_mendukung=" + ("; ".join(din["mendukung"]) or "tidak ada"))
+    L.append("bukti_menentang=" + ("; ".join(din["menentang"]) or "tidak ada"))
+    L.append(f"tingkat_keyakinan={din['keyakinan']} (terkonfirmasi_statistik=TIDAK: pola belum diuji out-of-sample)")
+    L.append("kondisi_pembatalan=" + "; ".join(din["pembatalan"]))
+    for a, b in dn.tujuh_pertanyaan(din, "lihat D. KEPUTUSAN"):
+        L.append(f"Q{a}: {b}")
+    L.append("catatan: " + dn.CATATAN_BOBOT + " Broker informatif vs tidak, dan nilai tambah bandarmologi dibanding harga-volume saja, BELUM diuji (butuh backtest out-of-sample).")
+    return L
+
+
+def _meta(r, rk, f, ovn, alr, b200, hk_, ritel, v, snapshot, status, nilai_din=None) -> list[str]:
     L = ["## A. METADATA & KUALITAS DATA"]
     tgl = rk["tgl"] if rk else r.chart["tgl"].iloc[-1]
     umur = (snapshot.date() - tgl).days
@@ -355,7 +399,7 @@ def _meta(r, rk, f, ovn, alr, b200, hk_, ritel, v, snapshot, status) -> list[str
              f"lap_keuangan_terakhir={f['periode'] if f else '-'} basis_laba={f['ltm']['ni'][1] if f else '-'} FY_tersedia={','.join(f['kualitas']['fy']) if f and f['kualitas']['fy'] else 'tidak'}")
     L.append("sumber: harga=/analysis/chart/stock (EOD; volume lembar) | broker=/analysis/summary/stock (EOD 18:00) | orderbook=/analysis/order-book (snapshot) | "
              "intraday=/analysis/chart/multi-time (30m) | keuangan=/analysis/financial-statement (IS/BS/CF kuartalan+FY; Q4 diturunkan) | "
-             "SID=/analysis/shareholder/number (bulanan) | afiliasi=/analysis/shareholder-above | aksi=/analysis/calendar | profil=/analysis/information")
+             "inventory_broker=/analysis/inventory-chart/stock (net kumulatif harian top broker) | SID=/analysis/shareholder/number (bulanan) | afiliasi=/analysis/shareholder-above | aksi=/analysis/calendar | profil=/analysis/information")
     kosong = []
     if rk is None:
         kosong.append("teknikal(semua)")
@@ -377,6 +421,8 @@ def _meta(r, rk, f, ovn, alr, b200, hk_, ritel, v, snapshot, status) -> list[str
         kosong.append("afiliasi>=5%")
     if b200 is None:
         kosong.append("bandar_jangka_panjang")
+    if nilai_din is None:
+        kosong.append("bandar_dinamis(inventory broker)")
     if ovn is None:
         kosong.append("statistik_BPJP_BSJP")
     L.append(f"field_kosong({len(kosong)})=" + (",".join(kosong) or "tidak ada"))
@@ -430,7 +476,9 @@ def _kesimpulan(r, rk, f, ovn, alr, b200, hk_, nilai, ritel, kep, alasan, stat, 
     if f:
         lt = f["ltm"]
         L.append(f"[OBS] fundamental LTM: pendapatan={_m(lt['rev'][0])} laba={_m(lt['ni'][0])} CFO={_m(lt['cfo'][0])} FCF={_m(lt['fcf'])} (basis {lt['ni'][1]})")
-    L.append(f"[INF] bandarmologi={_lbl_bandar(nilai['kategori'])} skor={nilai['skor']:+d}/{nilai['skor_maks']}" + ("; jebakan: " + " | ".join(nilai["jebakan"]) if nilai["jebakan"] else ""))
+    din_ = nilai.get("dinamis")
+    L.append(f"[INF] bandarmologi={_lbl_bandar(nilai['kategori'])}" + (f"; tingkat_bukti={nilai['tingkat']}; keyakinan={din_['keyakinan']}" if din_ else "")
+             + ("; jebakan: " + " | ".join(nilai["jebakan"]) if nilai["jebakan"] else ""))
     if b200:
         L.append(f"[INF] bandar_{b200['hari']}h: arah={b200['status'].lower()} {_lbl_nyangkut(b200['nyangkut'])}")
     if ritel:
@@ -522,7 +570,7 @@ def _audit_lines(r, rk, f, nilai, hk_, kep, alasan, ritel, b200) -> list[str]:
     L.append(f"asumsi: modal=Rp{p.modal:,.0f} risiko/trade={p.risiko_pct:.1%} fee_beli={p.fee_beli:.2%} fee_jual={p.fee_jual:.2%} (pajak jual dianggap termasuk); lot=100 lembar; window_broker={p.window_hari}h; "
              f"ritel(minat)=XL,XC,PD,CC,YP (default); ambang heuristik belum divalidasi: distribusi {p.distribusi_pct:.0%}, nyangkut +-5%, SID +-2% (3 bln), volume tinggi 1.5x, likuid 5M/hari, uptrend=harga>MA50 & MA50 naik")
     sinyal = {"adimology": 1 if r.verdict.startswith("SETUP") else -1,
-              "bandarmologi": 1 if nilai["kategori"] == "AKUMULASI KUAT" else -1 if nilai["kategori"].startswith("WASPADA") else 0}
+              "bandarmologi": {"kuat": 1, "waspada": -1, "lain": 0}[bd.gate(nilai)]}
     if rk:
         sinyal["teknikal"] = 1 if rk["verdict"].startswith("BELI") else -1 if rk["verdict"] == "HINDARI" else 0
     if hk_:
@@ -554,12 +602,13 @@ def txt_bytes(r, rk, f, waktu: str, ovn=None, alr=None, b200=None, hk_=None, nil
              "Satuan: harga Rp; lot=100 lembar; M=Rp miliar; % bertanda.")
     L.append("UNTUK AI: jawab terpisah (1) trading setup dan (2) investment thesis; bila data satu sisi tidak mendukung, katakan tidak dapat dinilai. Bedakan observasi, inferensi, keputusan. "
              "Nyatakan 'probabilitas belum diketahui' bila tidak tervalidasi; sebut data hilang/asumsi yang paling memengaruhi keputusan dan syarat yang membatalkan kesimpulan. Bukan nasihat investasi.")
-    L += _meta(r, rk, f, ovn, alr, b200, hk_, ritel, val, snapshot, status or {})
+    L += _meta(r, rk, f, ovn, alr, b200, hk_, ritel, val, snapshot, status or {}, nilai.get("dinamis"))
     L += _validasi_lines(val)
     L += _kesimpulan(r, rk, f, ovn, alr, b200, hk_, nilai, ritel, kep, alasan, stat, pos)
     L += _edge_lines(stat, kep)
     L += _keputusan_lines(r, rk, nilai, hk_, kep, alasan, pos, ovn)
     L.append("# ===== DATA RINCI (observasi; baris [INF] = inferensi) =====")
+    L += _bandar_lines(nilai.get("dinamis"))
     L += _data_lines(r, rk, f, ovn, alr, b200, hk_, nilai, vol, ritel, stat)
     L += _audit_lines(r, rk, f, nilai, hk_, kep, alasan, ritel, b200)
     L.append("## BATASAN DATA & ENDPOINT")

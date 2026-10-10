@@ -55,7 +55,7 @@ def test_txt_is_compact_and_complete():
               "## BANDAR (window)", "## BANDAR 200H", "## VOLUME", "## BPJP/BSJP", "## FUNDAMENTAL"):
         assert h in out, h
     assert "## MINAT RITEL" in out and "arah=TURUN" in out and "status=RITEL KELUAR / DIKERINGKAN" in out and "SID turun = minat ritel menurun" in out
-    assert "INDIKASI NYANGKUT" in out and "nyangkut=NYANGKUT" not in out and "P(naik)" in out and "n_eff" in out and "area_beli=" in out and "UNTUK AI:" in out
+    assert "harga DI BAWAH estimasi modal" in out and "nyangkut=NYANGKUT" not in out and "## BANDARMOLOGI: KERANGKA BUKTI" in out and "P(naik)" in out and "n_eff" in out and "area_beli=" in out and "UNTUK AI:" in out
     assert len(out.encode()) < 24_000, len(out.encode())
     assert all(ord(ch) < 0x2500 for ch in out)               # tanpa emoji/dekorasi
 

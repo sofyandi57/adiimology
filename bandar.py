@@ -70,8 +70,20 @@ def _k(nama, status, poin, bukti, inti=False):
     return dict(kriteria=nama, status=status, poin=poin, bukti=bukti, inti=inti)
 
 
-def penilaian(r, a: dict | None = None, rk: dict | None = None) -> dict:
-    """r = adimology.Result, a = aliran (opsional), rk = teknikal.rekomendasi (opsional)."""
+def gate(n: dict) -> str:
+    """'kuat' | 'waspada' | 'lain'. Dipakai semua aturan keputusan (kategori lama maupun kerangka bukti dinamis)."""
+    k = n["kategori"]
+    if n.get("jebakan") or k.startswith("WASPADA") or k.startswith("DISTRIBUSI"):
+        return "waspada"
+    return "kuat" if k in ("AKUMULASI KUAT", "AKUMULASI TERKONFIRMASI (perilaku harga)") else "lain"
+
+
+def penilaian(r, a: dict | None = None, rk: dict | None = None, dinamis: dict | None = None) -> dict:
+    """r = adimology.Result, a = aliran (opsional), rk = teknikal.rekomendasi (opsional).
+
+    dinamis = hasil dinamika.analisa (kerangka bukti): bila ada, KATEGORI & tingkat bukti diambil darinya; checklist 7 kriteria tetap
+    ditampilkan sebagai pendukung (bukan skor utama).
+    """
     excl = set(r.params.broker_dikecualikan)
     ks = []
     jebakan = []
@@ -180,9 +192,12 @@ def penilaian(r, a: dict | None = None, rk: dict | None = None) -> dict:
         kategori = KATEGORI[1]
     else:
         kategori = KATEGORI[2]
-    return dict(kategori=kategori, skor=skor, skor_maks=len(diukur), kriteria=ks, jebakan=jebakan, info=info,
-                fase=f, naik_window=naik_window, konsentrasi_jual=kj,
-                lengkap=not inti_na and len(diukur) == len(ks))
+    out = dict(kategori=kategori, skor=skor, skor_maks=len(diukur), kriteria=ks, jebakan=jebakan, info=info,
+               fase=f, naik_window=naik_window, konsentrasi_jual=kj,
+               lengkap=not inti_na and len(diukur) == len(ks), kategori_lama=kategori, tingkat=None, dinamis=None)
+    if dinamis:
+        out.update(kategori=dinamis["kategori"], tingkat=dinamis["tingkat"], dinamis=dinamis)
+    return out
 
 
 def tabel(p: dict) -> pd.DataFrame:

@@ -30,8 +30,14 @@ def test_keputusan_rules():
     beli = dict(rk, verdict="BELI DI AREA ENTRY")
     assert lp.keputusan(r, beli, f, nilai=_nilai("AKUMULASI KUAT"))[0] == "BELI"
     kep, alasan = lp.keputusan(r, beli, f, nilai=_nilai("AKUMULASI LEMAH / BELUM SEARAH"))
-    assert kep == "TUNGGU" and any("belum searah" in a for a in alasan)
+    assert kep == "TUNGGU" and any("belum cukup" in a for a in alasan)
     assert lp.keputusan(r, beli, f, nilai=_nilai("WASPADA: TANDA DISTRIBUSI / JEBAKAN"))[0] == "HINDARI / JUAL"
+    # kerangka bukti dinamis: hanya TERKONFIRMASI oleh perilaku harga yang boleh BELI
+    assert lp.keputusan(r, beli, f, nilai=_nilai("AKUMULASI TERKONFIRMASI (perilaku harga)"))[0] == "BELI"
+    assert lp.keputusan(r, beli, f, nilai=_nilai("AKUMULASI TERINDIKASI"))[0] == "TUNGGU"
+    assert lp.keputusan(r, beli, f, nilai=_nilai("ABSORPSI SUPPLY"))[0] == "TUNGGU"
+    assert lp.keputusan(r, beli, f, nilai=_nilai("TIDAK KONKLUSIF"))[0] == "TUNGGU"
+    assert lp.keputusan(r, beli, f, nilai=_nilai("DISTRIBUSI TERINDIKASI"))[0] == "HINDARI / JUAL"
     assert lp.keputusan(r, dict(rk, verdict="HINDARI"), f, nilai=_nilai("AKUMULASI KUAT"))[0] == "HINDARI / JUAL"
     _, _, f_bad = _inputs(liab_scale=1.3)                         # utang > aset menang atas semuanya
     kep, alasan = lp.keputusan(r, beli, f_bad, nilai=_nilai("AKUMULASI KUAT"))
