@@ -9,10 +9,12 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 import sqlalchemy as sa
 import streamlit as st
 
 import adimology as ad
+import teknikal as tk
 
 st.set_page_config(page_title="Adimology Calculator", page_icon="📈", layout="wide")
 
@@ -207,12 +209,88 @@ def ringkas(r: ad.Result) -> dict:
             "Upside realistis %": r.calc["upside_real"] * 100, "Alasan": "; ".join(r.alasan[:2])}
 
 
+MA_WARNA = {5: "#0ea5e9", 20: "#f59e0b", 50: "#10b981", 100: "#8b5cf6", 200: "#ef4444"}
+
+
+def rekomendasi_chart(rk: dict) -> go.Figure:
+    d = rk["ind"].tail(160)
+    x = d["tgl"].astype(str)
+    fig = make_subplots(rows=3, cols=1, shared_xaxes=True, row_heights=[0.6, 0.2, 0.2], vertical_spacing=0.03)
+    fig.add_trace(go.Candlestick(x=x, open=d["open"], high=d["high"], low=d["low"], close=d["close"], name="Harga",
+                                 increasing_line_color="#16a34a", decreasing_line_color="#dc2626"), row=1, col=1)
+    for n, c in MA_WARNA.items():
+        if d[f"ma{n}"].notna().any():
+            fig.add_scatter(x=x, y=d[f"ma{n}"], mode="lines", name=f"MA{n}", line=dict(color=c, width=1.2), row=1, col=1)
+    fig.add_hrect(y0=rk["entry_lo"], y1=rk["entry_hi"], fillcolor="#2563eb", opacity=0.12, line_width=0,
+                  annotation_text="Area entry", annotation_position="top left", row=1, col=1)
+    for y, nama, warna in [(rk["tp1"], "TP1", "#16a34a"), (rk["tp2"], "TP2", "#15803d"), (rk["sl"], "SL", "#dc2626")]:
+        fig.add_hline(y=y, line_color=warna, line_dash="dash", line_width=1, row=1, col=1,
+                      annotation_text=f"{nama} {y:,.0f}", annotation_position="top right", annotation_font_size=11)
+    for c in rk["sup"][:3] + rk["res"][:3]:
+        fig.add_hline(y=c["harga"], line_color="#9ca3af", line_dash="dot", line_width=1, row=1, col=1)
+    fig.add_scatter(x=x, y=d["rsi"], mode="lines", name="RSI 14", line=dict(color="#7c3aed"), row=2, col=1)
+    for y in (30, 70):
+        fig.add_hline(y=y, line_color="#9ca3af", line_dash="dot", line_width=1, row=2, col=1)
+    fig.add_bar(x=x, y=d["hist"], name="Histogram", row=3, col=1,
+                marker_color=["#16a34a" if v >= 0 else "#dc2626" for v in d["hist"].fillna(0)])
+    fig.add_scatter(x=x, y=d["macd"], mode="lines", name="MACD", line=dict(color="#2563eb"), row=3, col=1)
+    fig.add_scatter(x=x, y=d["signal"], mode="lines", name="Signal", line=dict(color="#f97316"), row=3, col=1)
+    fig.update_layout(height=720, margin=dict(l=10, r=10, t=30, b=10), xaxis_rangeslider_visible=False,
+                      legend=dict(orientation="h", y=1.04))
+    fig.update_xaxes(type="category", nticks=10)
+    fig.update_yaxes(title_text="RSI", range=[0, 100], row=2, col=1)
+    fig.update_yaxes(title_text="MACD", row=3, col=1)
+    return fig
+
+
+PETUNJUK = """
+**Langkah cepat**
+1. Isi **Kode saham** (4 huruf, mis. BBCA) di sidebar.
+2. Atur **Window broker summary** (jumlah hari bursa yang dianalisa; default 5).
+3. Klik **Hitung**. Hasil muncul di tab-tab di kanan dan otomatis tercatat di **Histori**.
+
+**Tab**
+- **Ringkasan**: verdict Adimology, harga, avg bandar, target realistis & max, SL, grafik, kalkulator posisi.
+- **Rekomendasi**: analisa teknikal lanjutan: area entry aman, SL, target jual (TP1/TP2) dari support/resistance,
+  MA 5/20/50/100/200, RSI 14, MACD (12, 26, 9), dan nilai bandar (net value top-5 broker).
+- **Broker**: bandar terpilih, top net buy/sell, aliran harian bandar.
+- **Orderbook**: antrean bid/offer dan lot per papan yang dipakai rumus.
+- **Sensitivitas**: seberapa berubah target bila barang bandar / lot per papan berbeda.
+- **Multi-saham**: jalankan analisa untuk banyak kode sekaligus (maks 15).
+- **Histori**: catatan semua pengecekan (emiten, waktu WIB, target, SL, harga); bisa diunduh CSV.
+- **Rumus & catatan**: rumus Adimology dan keterbatasannya.
+
+**Parameter penting**
+- **Broker dikecualikan**: broker ritel yang bukan bandar (mis. XL, YP, XC).
+- **Broker bandar manual**: paksa broker tertentu sebagai bandar.
+- **Lot per papan manual / Orderbook historis**: dipakai saat pasar tutup (orderbook hanya 1 level).
+- **Parameter lanjutan**: margin, faktor target, ambang distribusi, modal & risiko per trade.
+
+**Membaca tab Rekomendasi**
+- **BELI DI AREA ENTRY**: harga sudah di area entry, indikator & bandar mendukung, R/R cukup.
+- **TUNGGU KE AREA ENTRY**: setup bagus tapi harga di atas area entry. Pasang antrean di area entry, jangan kejar.
+- **TUNGGU**: target terlalu dekat dibanding risiko (R/R kurang).
+- **HINDARI**: mayoritas indikator/aliran bandar melawan, atau harga sudah tembus SL.
+- **TIDAK TERUKUR**: data harga kurang dari 60 hari bursa (mis. saham baru IPO).
+
+Data cache 5 menit (orderbook 15 detik). Semua hasil adalah edukasi, bukan ajakan transaksi.
+"""
+
+
+@st.dialog("Petunjuk penggunaan", width="large")
+def petunjuk():
+    st.markdown(PETUNJUK)
+
+
 # ------------------------------------------------------------------------------ sidebar
 st.sidebar.title("📈 Adimology")
-if st.sidebar.button("Keluar"):
+sb1, sb2 = st.sidebar.columns(2)
+if sb1.button("Keluar", width="stretch"):
     st.session_state.pop("_auth", None)
     st.session_state.pop("histori", None)
     st.rerun()
+if sb2.button("ℹ️ Petunjuk", width="stretch"):
+    petunjuk()
 key = get_api_key()
 if not key:
     st.sidebar.text_input("Invezgo API key", type="password", key="_key_input",
@@ -256,6 +334,7 @@ params = ad.Params(
     modal=modal, risiko_pct=risiko, fee_beli=fee_b, fee_jual=fee_j)
 
 if submitted:
+    st.session_state.pop("tek", None)
     if not key:
         st.session_state["res"] = ("err", "Isi API key Invezgo di sidebar atau di st.secrets.")
     else:
@@ -267,14 +346,23 @@ if submitted:
             st.session_state["res"] = ("err", str(e))
         except Exception as e:  # jaga UI tetap hidup
             st.session_state["res"] = ("err", f"Error tak terduga: {e}")
+        if st.session_state["res"][0] == "ok":
+            r0 = st.session_state["res"][1]
+            try:
+                with st.spinner("Menghitung analisa teknikal..."):
+                    df_tk = tk.get_chart_panjang(CachedClient(key), r0.params.kode, r0.params.tanggal_akhir)
+                    bv = tk.bandar_value(r0.bs, r0.bandar["code"], r0.params.broker_dikecualikan)
+                    st.session_state["tek"] = ("ok", tk.rekomendasi(df_tk, bv))
+            except Exception as e:  # teknikal gagal tidak boleh mematikan kalkulator
+                st.session_state["tek"] = ("err", str(e) if isinstance(e, ad.AdimologyError) else f"Error tak terduga: {e}")
 
 # ------------------------------------------------------------------------------- main
 st.title("Adimology Calculator")
 st.caption("Target harga metode Adimology dari data broker summary dan orderbook Invezgo. "
            "Edukasi, bukan ajakan transaksi. Metode heuristik, belum teruji statistik.")
 
-tab_main, tab_broker, tab_ob, tab_sens, tab_multi, tab_hist, tab_rumus = st.tabs(
-    ["Ringkasan", "Broker", "Orderbook", "Sensitivitas", "Multi-saham", "Histori", "Rumus & catatan"])
+tab_main, tab_rek, tab_broker, tab_ob, tab_sens, tab_multi, tab_hist, tab_rumus = st.tabs(
+    ["Ringkasan", "Rekomendasi", "Broker", "Orderbook", "Sensitivitas", "Multi-saham", "Histori", "Rumus & catatan"])
 
 state = st.session_state.get("res")
 with tab_main:
@@ -308,6 +396,61 @@ with tab_main:
                        "Untuk SL di bawah harga saja. Ukuran posisi hanya hitungan mekanis, bukan rekomendasi.")
         else:
             st.write("Harga tidak di atas SL atau modal tidak cukup, ukuran posisi tidak dihitung.")
+
+
+def rp_milyar(x):
+    return "-" if x is None or pd.isna(x) else f"Rp{x / 1e9:+,.2f} M"
+
+
+with tab_rek:
+    tek = st.session_state.get("tek")
+    if not tek:
+        st.info("Klik **Hitung** di sidebar. Analisa teknikal dihitung bersamaan dengan Adimology.")
+    elif tek[0] == "err":
+        st.error(f"Analisa teknikal gagal: {tek[1]}")
+    else:
+        rk = tek[1]
+        kode_rk = state[1].params.kode if state and state[0] == "ok" else ""
+        box = {"BELI DI AREA ENTRY": st.success, "TUNGGU KE AREA ENTRY": st.info,
+               "TUNGGU": st.warning, "HINDARI": st.error, "TIDAK TERUKUR": st.warning}[rk["verdict"]]
+        box(f"**{kode_rk} → {rk['verdict']}**: {rk['alasan']} · skor {rk['skor']:+d} dari ±{rk['skor_max']}")
+        c = st.columns(6)
+        c[0].metric("Harga", fmt(rk["harga"]))
+        c[1].metric("Area entry", f"{rk['entry_lo']:,.0f} – {rk['entry_hi']:,.0f}", f"dasar: {rk['entry_basis']}", delta_color="off")
+        c[2].metric("Stop loss", fmt(rk["sl"]), f"{rk['sl'] / rk['entry_lo'] - 1:+.1%} dari entry", delta_color="off")
+        c[3].metric("Target jual 1", fmt(rk["tp1"]), f"{rk['tp1'] / rk['harga'] - 1:+.1%}")
+        c[4].metric("Target jual 2", fmt(rk["tp2"]), f"{rk['tp2'] / rk['harga'] - 1:+.1%}")
+        c[5].metric("R/R (TP1)", f"{rk['rr']:.2f}", f"target: {rk['tp_basis']}", delta_color="off")
+        st.plotly_chart(rekomendasi_chart(rk), width="stretch")
+
+        k1, k2, k3 = st.columns(3)
+        with k1:
+            st.markdown("**Moving average**")
+            st.dataframe(pd.DataFrame([{"MA": f"MA{n}", "Nilai": v,
+                                        "Posisi harga": "-" if v is None else ("di atas" if rk["harga"] > v else "di bawah")}
+                                       for n, v in rk["ma"].items()]),
+                         hide_index=True, width="stretch", column_config={"Nilai": st.column_config.NumberColumn(format="%,.1f")})
+            st.markdown(f"**RSI 14:** {fmt(rk['rsi'], 1)} · **MACD:** {fmt(rk['macd'], 2)} / signal {fmt(rk['signal'], 2)}")
+        with k2:
+            st.markdown("**Support & resistance**")
+            sr = ([{"Jenis": "Resistance", "Harga": x["harga"], "Sentuhan": x["n"]} for x in rk["res"][:3][::-1]] +
+                  [{"Jenis": "Support", "Harga": x["harga"], "Sentuhan": x["n"]} for x in rk["sup"][:3]])
+            if sr:
+                st.dataframe(pd.DataFrame(sr), hide_index=True, width="stretch",
+                             column_config={"Harga": st.column_config.NumberColumn(format="%,.0f")})
+            else:
+                st.write("Belum ada swing high/low yang jelas.")
+        with k3:
+            bv = rk["bandar"]
+            st.markdown(f"**Bandar value** (window broker summary) · **{bv.get('status', '-')}**")
+            st.metric("Net value bandar terpilih", rp_milyar(bv.get("bandar")))
+            st.metric("Net top-5 akumulator vs distributor", rp_milyar(bv.get("net_top5")),
+                      f"beli {rp_milyar(bv.get('top5_beli'))} · jual {rp_milyar(bv.get('top5_jual'))}", delta_color="off")
+        st.markdown("**Rincian sinyal**")
+        st.markdown("\n".join(f"- {'🟢' if p > 0 else '🔴' if p < 0 else '⚪'} {t}" for p, t in rk["poin"]))
+        catatan = ("MA200 belum tersedia (data < 200 hari bursa). " if rk["ma"][200] is None else "")
+        st.caption(f"{catatan}Data {rk['n_bar']} hari bursa s/d {rk['tgl']}. Support/resistance dari swing high/low "
+                   "±5 hari (250 hari terakhir), SL = support − 1 ATR14. Edukasi, bukan ajakan transaksi.")
 
 
 if state and state[0] == "ok":

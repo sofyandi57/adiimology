@@ -59,6 +59,13 @@ def test_app_runs_and_computes(monkeypatch, tmp_path):
     vals = {m.label: m.value for m in at.metric}
     assert vals["Target realistis"] == "292" and vals["Target max"] == "296"
     assert "histori" not in at.session_state  # tersimpan ke DB, bukan ke sesi
+    # tab Rekomendasi terisi (data tiruan hanya 5 hari -> TIDAK TERUKUR, tapi tetap tampil tanpa error)
+    tek = at.session_state["tek"]
+    assert tek[0] == "ok" and tek[1]["verdict"] == "TIDAK TERUKUR"
+    assert {"Area entry", "Stop loss", "Target jual 1", "Target jual 2"} <= {m.label for m in at.metric}
+    # tombol Petunjuk membuka dialog tanpa error
+    [b for b in at.button if b.label == "ℹ️ Petunjuk"][0].click().run()
+    assert not at.exception, [e.value for e in at.exception]
     # sesi baru (login ulang) masih melihat histori dari DB -> persisten
     at2 = open_app(monkeypatch)
     hdf = [d.value for d in at2.dataframe if "Nama Emiten" in d.value.columns][0]
