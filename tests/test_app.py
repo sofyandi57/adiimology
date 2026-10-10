@@ -57,6 +57,9 @@ def test_app_runs_and_computes(monkeypatch):
     assert "Target realistis" in labels and "Target max" in labels
     vals = {m.label: m.value for m in at.metric}
     assert vals["Target realistis"] == "292" and vals["Target max"] == "296"
+    h = at.session_state["histori"]
+    assert len(h) == 1 and h[0]["Nama Emiten"] == "MCAS" and h[0]["Target Adimologi"] == 292
+    assert list(h[0]) == ["Nama Emiten", "Tanggal & Waktu Pengecekan", "Target Adimologi", "Stop Loss", "Current Price"]
 
 
 def test_multi_batch(monkeypatch):

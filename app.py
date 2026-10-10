@@ -5,6 +5,7 @@ import datetime as dt
 import hmac
 import os
 from dataclasses import replace
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import plotly.graph_objects as go
@@ -110,6 +111,16 @@ def harian_chart(r: ad.Result) -> go.Figure:
     return fig
 
 
+def catat_histori(r: ad.Result) -> None:
+    """Simpan hasil hitung ke histori sesi (hilang saat tab ditutup / logout)."""
+    st.session_state.setdefault("histori", []).append({
+        "Nama Emiten": r.params.kode,
+        "Tanggal & Waktu Pengecekan": dt.datetime.now(ZoneInfo("Asia/Jakarta")).strftime("%Y-%m-%d %H:%M:%S WIB"),
+        "Target Adimologi": r.calc["t_real_r"],
+        "Stop Loss": r.plan["sl"],
+        "Current Price": r.harga})
+
+
 def ringkas(r: ad.Result) -> dict:
     return {"Kode": r.params.kode, "Verdict": r.verdict, "Bandar": r.bandar["code"],
             "Net lot": r.bandar["net_lot"], "Avg bandar": r.bandar["avg"], "Harga": r.harga,
@@ -121,6 +132,7 @@ def ringkas(r: ad.Result) -> dict:
 st.sidebar.title("📈 Adimology")
 if st.sidebar.button("Keluar"):
     st.session_state.pop("_auth", None)
+    st.session_state.pop("histori", None)
     st.rerun()
 key = get_api_key()
 if not key:
@@ -171,6 +183,7 @@ if submitted:
         try:
             with st.spinner(f"Mengambil data {kode} dari Invezgo..."):
                 st.session_state["res"] = ("ok", ad.analyze(CachedClient(key), params))
+            catat_histori(st.session_state["res"][1])
         except ad.AdimologyError as e:
             st.session_state["res"] = ("err", str(e))
         except Exception as e:  # jaga UI tetap hidup
@@ -181,8 +194,8 @@ st.title("Adimology Calculator")
 st.caption("Target harga metode Adimology dari data broker summary dan orderbook Invezgo. "
            "Edukasi, bukan ajakan transaksi. Metode heuristik, belum teruji statistik.")
 
-tab_main, tab_broker, tab_ob, tab_sens, tab_multi, tab_rumus = st.tabs(
-    ["Ringkasan", "Broker", "Orderbook", "Sensitivitas", "Multi-saham", "Rumus & catatan"])
+tab_main, tab_broker, tab_ob, tab_sens, tab_multi, tab_hist, tab_rumus = st.tabs(
+    ["Ringkasan", "Broker", "Orderbook", "Sensitivitas", "Multi-saham", "Histori", "Rumus & catatan"])
 
 state = st.session_state.get("res")
 with tab_main:
@@ -281,6 +294,7 @@ with tab_multi:
                 try:
                     rr_ = ad.analyze(client, replace(params, kode=cd, broker_manual=None, lot_per_papan_override=0.0))
                     rows.append(ringkas(rr_))
+                    catat_histori(rr_)
                 except Exception as e:
                     rows.append({"Kode": cd, "Verdict": "ERROR", "Alasan": str(e)})
                 prog.progress((i + 1) / len(codes))
@@ -291,6 +305,23 @@ with tab_multi:
                      column_config={"Net lot": st.column_config.NumberColumn(format="%,.0f"),
                                     "Avg bandar": st.column_config.NumberColumn(format="%.1f"),
                                     "Upside realistis %": st.column_config.NumberColumn(format="%+.1f")})
+
+with tab_hist:
+    hist = st.session_state.get("histori", [])
+    if not hist:
+        st.info("Belum ada histori. Setiap hasil **Hitung** dan batch Multi-saham tercatat di sini.")
+    else:
+        hdf = pd.DataFrame(hist[::-1])
+        st.dataframe(hdf, hide_index=True, width="stretch",
+                     column_config={c: st.column_config.NumberColumn(format="%,.0f")
+                                    for c in ["Target Adimologi", "Stop Loss", "Current Price"]})
+        h1, h2 = st.columns([1, 1])
+        h1.download_button("Unduh CSV", hdf.to_csv(index=False).encode(), "histori_adimology.csv", "text/csv")
+        if h2.button("Hapus histori"):
+            st.session_state.pop("histori", None)
+            st.rerun()
+        st.caption("Target Adimologi = target realistis. Histori tersimpan selama sesi ini saja "
+                   "(hilang saat halaman di-refresh, tab ditutup, atau Keluar). Unduh CSV untuk menyimpan.")
 
 with tab_rumus:
     st.markdown("""
