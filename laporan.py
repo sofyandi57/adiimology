@@ -21,6 +21,7 @@ from reportlab.lib.units import cm  # noqa: E402
 from reportlab.platypus import (CondPageBreak, Image, KeepTogether, Paragraph, SimpleDocTemplate,  # noqa: E402
                                 Spacer, Table, TableStyle)
 
+import aliran as al  # noqa: E402
 import fundamental as fd  # noqa: E402
 import intraday as idt  # noqa: E402
 
@@ -56,9 +57,15 @@ def keputusan(r, rk: dict | None, f: dict | None) -> tuple[str, list[str]]:
     else:
         alasan.append(f"Fundamental: tidak ada tanda bahaya besar ({len(f.get('peringatan', []))} catatan kuning)")
 
+    kons = (getattr(r, "konsentrasi", None) or {}).get("status")
+    if kons:
+        alasan.append(f"Konsentrasi broker: {kons}")
     if fatal or (rk and rk["verdict"] == "HINDARI"):
         return "HINDARI / JUAL", alasan
     if rk and rk["verdict"] == "BELI DI AREA ENTRY" and (r.setup_ok or (r.bandar.get("net_lot", 0) > 0 and not r.distribusi)):
+        if kons in ("TERSEBAR", "TIDAK ADA AKUMULASI"):
+            alasan.append("BELI ditahan: akumulasi tidak terkonsentrasi (top 3 pembeli < separuh lot top 15 penjual)")
+            return "TUNGGU", alasan
         return "BELI", alasan
     return "TUNGGU", alasan
 
@@ -107,7 +114,7 @@ def ringkasan_rows(r, rk: dict | None, f: dict | None, waktu: str) -> list[tuple
 
 
 # ------------------------------------------------------------------------ Excel
-def excel_bytes(r, rk: dict | None, f: dict | None, waktu: str, ovn: dict | None = None) -> bytes:
+def excel_bytes(r, rk: dict | None, f: dict | None, waktu: str, ovn: dict | None = None, alr: dict | None = None) -> bytes:
     buf = io.BytesIO()
     kep, alasan = keputusan(r, rk, f)
     with pd.ExcelWriter(buf, engine="openpyxl") as xw:
@@ -127,6 +134,9 @@ def excel_bytes(r, rk: dict | None, f: dict | None, waktu: str, ovn: dict | None
         bcols = [c for c in ["code", "name", "net_lot", "porsi_net_%", "buy_avg", "sell_avg", "net_value"] if c in r.bs]
         r.bs.sort_values("net_volume", ascending=False)[bcols].to_excel(xw, sheet_name="Broker", index=False)
         r.harian.to_excel(xw, sheet_name="Bandar harian", index=False)
+        pd.DataFrame(al.ringkas(r, alr)).to_excel(xw, sheet_name="Konfirmasi aliran", index=False)
+        if alr is not None and not alr["konsistensi"].empty:
+            alr["konsistensi"].to_excel(xw, sheet_name="Konsistensi bandar", index=False)
         if ovn:
             idt.tabel(ovn["bsjp"], bsjp=True).to_excel(xw, sheet_name="BSJP", index_label="Metrik")
             idt.tabel(ovn["bpjp"], bsjp=False).to_excel(xw, sheet_name="BPJP", index_label="Metrik")
@@ -226,7 +236,7 @@ def _fund_table(df: pd.DataFrame, mark: dict, kunci: str, lebar: float):
     return _tbl(data, [first] + [rest] * len(df.columns), cell_bg=bg, font=7)
 
 
-def pdf_bytes(r, rk: dict | None, f: dict | None, waktu: str, ovn: dict | None = None) -> bytes:
+def pdf_bytes(r, rk: dict | None, f: dict | None, waktu: str, ovn: dict | None = None, alr: dict | None = None) -> bytes:
     buf = io.BytesIO()
     doc = SimpleDocTemplate(buf, pagesize=A4, leftMargin=1.6 * cm, rightMargin=1.6 * cm, topMargin=1.4 * cm,
                             bottomMargin=1.4 * cm, title=f"Riset {r.params.kode}", author="Adimology Calculator")
@@ -269,6 +279,12 @@ def pdf_bytes(r, rk: dict | None, f: dict | None, waktu: str, ovn: dict | None =
                 _n(r.plan["sl"])]]
     el.append(_tbl(ad_rows, [W * 0.19, W * 0.09, W * 0.12, W * 0.12, W * 0.18, W * 0.18, W * 0.12]))
     el += [Paragraph("- " + _safe(a), p) for a in r.alasan]
+    konf = al.ringkas(r, alr)
+    el.append(_tbl([["Konfirmasi aliran", "Status", "Detail"]] +
+                   [[Paragraph(_safe(x["Konfirmasi"]), p), Paragraph(_safe(x["Status"]), p), Paragraph(_safe(x["Detail"]), p)]
+                    for x in konf], [W * 0.28, W * 0.2, W * 0.52]))
+    el.append(Paragraph(_safe(f"Rentang target {_n(r.calc['t_real_r'])} - {_n(r.calc['t_max_r'])}; lot per papan "
+                              f"{_n(r.lot_per_papan)} ({r.lpp_sumber}); mode bandar {r.params.mode_bandar}."), small))
     top = r.bs.sort_values("net_volume", ascending=False)
     bt = [["Top net buy", "Net lot", "Avg beli", "Top net sell", "Net lot", "Avg jual"]]
     buy, sell = top.head(5).reset_index(drop=True), top.tail(5).iloc[::-1].reset_index(drop=True)

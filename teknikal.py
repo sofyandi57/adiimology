@@ -152,15 +152,16 @@ def support_resistance(df: pd.DataFrame, harga: float, lookback: int = 250, k: i
 
 
 # ------------------------------------------------------------------ nilai bandar
-def bandar_value(bs: pd.DataFrame, kode_bandar: str | None, excl: tuple = ()) -> dict:
+def bandar_value(bs: pd.DataFrame, kode_bandar: str | list | None, excl: tuple = ()) -> dict:
     """Net value (Rp) bandar terpilih dan top-5 akumulator vs top-5 distributor di window."""
     if bs is None or bs.empty or "net_value" not in bs:
         return dict(bandar=np.nan, top5_beli=np.nan, top5_jual=np.nan, net_top5=np.nan, status="TIDAK TERUKUR")
     b = bs[~bs["code"].isin(set(excl))]
     beli = float(b.nlargest(5, "net_value")["net_value"].clip(lower=0).sum())
     jual = float(b.nsmallest(5, "net_value")["net_value"].clip(upper=0).sum())
-    row = bs[bs["code"] == kode_bandar]
-    nb = float(row["net_value"].iloc[0]) if not row.empty else np.nan
+    codes = list(kode_bandar) if isinstance(kode_bandar, (list, tuple)) else [kode_bandar]
+    row = bs[bs["code"].isin(codes)]
+    nb = float(row["net_value"].sum()) if not row.empty else np.nan
     net = beli + jual
     status = "AKUMULASI" if net > 0 else "DISTRIBUSI" if net < 0 else "NETRAL"
     return dict(bandar=nb, top5_beli=beli, top5_jual=jual, net_top5=net, status=status)

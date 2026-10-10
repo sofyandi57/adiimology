@@ -14,6 +14,7 @@ import sqlalchemy as sa
 import streamlit as st
 
 import adimology as ad
+import aliran as al
 import fundamental as fd
 import intraday as idt
 import laporan as lp
@@ -269,6 +270,20 @@ def ambil_fundamental(client: ad.InvezgoClient, kode: str, harga: float) -> dict
                       opsional(f"/analysis/keystat/{kode}", {"type": "Q", "limit": 8}), harga)
 
 
+def ambil_aliran(client: ad.InvezgoClient, r: ad.Result) -> dict:
+    kode, codes = r.params.kode, r.bandar["codes"]
+    hari = r.chart["tgl"].tolist()
+    out = {"asing": al.asing(client, kode, r.tgl_awal, r.tgl_akhir),
+           "nego": al.negosiasi(client, kode, r.tgl_awal, r.tgl_akhir, r.total_vol_lot, codes),
+           "konsistensi": al.konsistensi(client, kode, hari, set(r.params.broker_dikecualikan), r.params.investor,
+                                         r.params.market, codes)}
+    try:
+        out["afiliasi"] = al.afiliasi(client, kode, codes)
+    except Exception:  # endpoint insider bisa tidak tersedia di paket API tertentu
+        out["afiliasi"] = None
+    return out
+
+
 PETUNJUK = """
 **Langkah cepat**
 1. Isi **Kode saham** (4 huruf, mis. BBCA) di sidebar.
@@ -287,7 +302,11 @@ PETUNJUK = """
 - **Statistik BPJP / BSJP** (bawah tab Rekomendasi): dari candle 30 menit 6 bulan, seberapa sering saham ini naik
   besok pagi setelah volume sore tinggi (BSJP), atau naik di sesi 1 setelah volume 30 menit pertama tinggi (BPJP);
   target jual (sudah termasuk fee) dan jam puncak yang paling sering = jendela jual. Ambang volume dalam lembar.
-- **Broker**: bandar terpilih, top net buy/sell, aliran harian bandar.
+- **Konfirmasi aliran** (Ringkasan): konsentrasi top 3 pembeli vs top 15 penjual, asing, nego (bandar bisa keluar
+  lewat crossing), konsistensi bandar 1/3/7/20 hari, afiliasi broker bandar dengan pemegang saham ≥5% (KSEI).
+- **Mode bandar** di sidebar: top 1 broker atau gabungan top 3 akumulator. **Median 3 snapshot** orderbook
+  (expander Orderbook historis) meredam fake bid/offer.
+- **Broker**: periode, bandar terpilih, konsistensi 1/3/7/20 hari, pasar nego, top net buy/sell, aliran harian.
 - **Orderbook**: antrean bid/offer dan lot per papan yang dipakai rumus.
 - **Sensitivitas**: seberapa berubah target bila barang bandar / lot per papan berbeda.
 - **Multi-saham**: jalankan analisa untuk banyak kode sekaligus (maks 15).
@@ -341,14 +360,21 @@ with st.sidebar.form("param"):
     tgl_akhir = st.date_input("Tanggal akhir", value=dt.date.today(), disabled=not pakai_tgl)
     investor = st.selectbox("Investor", ["all", "f", "d"], format_func={"all": "Semua", "f": "Asing", "d": "Domestik"}.get)
     broker_manual = st.text_input("Broker bandar manual (kosong = otomatis)", max_chars=2).upper()
-    excl = st.text_input("Broker dikecualikan (pisah koma)", value="XL",
-                         help="Platform ritel yang bukan bandar, mis. XL (Stockbit), YP (Mirae), XC (Ajaib).")
+    mode_bandar = st.selectbox("Mode bandar", ["top1", "top3"],
+                               format_func={"top1": "Top 1 broker", "top3": "Gabungan top 3 akumulator"}.get,
+                               help="Top 3: barang = total net 3 akumulator teratas, avg = rata-rata tertimbang volume beli.")
+    excl = st.text_input("Broker dikecualikan (pisah koma)", value=", ".join(al.RITEL_DEFAULT),
+                         help="Broker dominan ritel yang bukan bandar: XL (Stockbit), YP (Mirae), XC (Ajaib), PD (Indo Premier).")
+    aliran_on = st.checkbox("Aliran lanjutan (asing, nego, konsistensi 1/3/7/20 hari, afiliasi ≥5%)", value=True,
+                            help="Menambah ±7 panggilan API per Hitung.")
     lpp_manual = st.number_input("Lot per papan manual (0 = dari orderbook)", min_value=0.0, value=0.0, step=100.0,
                                  help="Berguna saat pasar tutup dan orderbook hanya 1 level.")
     with st.expander("Orderbook historis"):
         ob_hist = st.checkbox("Pakai snapshot historis")
         ob_date = st.date_input("Tanggal", value=dt.date.today() - dt.timedelta(days=1), min_value=dt.date(2026, 3, 25))
         ob_time = st.text_input("Jam WIB (HH:mm, 09:00-15:59)", value="10:30")
+        ob_multi = st.checkbox("Median 3 snapshot (10:00 / 11:30 / 14:30)",
+                               help="Lot per papan dari median 3 snapshot hari bursa terakhir, meredam fake bid/offer. +3 panggilan API.")
     with st.expander("Parameter lanjutan"):
         margin_a = st.number_input("Margin a (%)", 0.0, 50.0, 5.0, 0.5) / 100
         faktor = st.number_input("Faktor target realistis", 0.1, 1.0, 0.5, 0.05)
@@ -368,13 +394,14 @@ params = ad.Params(
     margin_a=margin_a, faktor_realistis=faktor,
     ob_date=ob_date.isoformat() if ob_hist else None, ob_time=ob_time if ob_hist else None,
     lot_per_papan_override=lpp_manual, min_upside=min_up, maks_kejar=maks_kejar, distribusi_pct=dist,
-    modal=modal, risiko_pct=risiko, fee_beli=fee_b, fee_jual=fee_j)
+    modal=modal, risiko_pct=risiko, fee_beli=fee_b, fee_jual=fee_j, mode_bandar=mode_bandar, ob_multi=ob_multi)
 
 if submitted:
     st.session_state.pop("tek", None)
     st.session_state.pop("fund", None)
     st.session_state.pop("export", None)
     st.session_state.pop("ovn", None)
+    st.session_state.pop("aliran", None)
     if not key:
         st.session_state["res"] = ("err", "Isi API key Invezgo di sidebar atau di st.secrets.")
     else:
@@ -391,10 +418,16 @@ if submitted:
             try:
                 with st.spinner("Menghitung analisa teknikal..."):
                     df_tk = tk.get_chart_panjang(CachedClient(key), r0.params.kode, r0.params.tanggal_akhir)
-                    bv = tk.bandar_value(r0.bs, r0.bandar["code"], r0.params.broker_dikecualikan)
+                    bv = tk.bandar_value(r0.bs, r0.bandar["codes"], r0.params.broker_dikecualikan)
                     st.session_state["tek"] = ("ok", tk.rekomendasi(df_tk, bv))
             except Exception as e:  # teknikal gagal tidak boleh mematikan kalkulator
                 st.session_state["tek"] = ("err", str(e) if isinstance(e, ad.AdimologyError) else f"Error tak terduga: {e}")
+            if aliran_on:
+                try:
+                    with st.spinner("Mengambil aliran asing, nego, konsistensi, afiliasi..."):
+                        st.session_state["aliran"] = ("ok", ambil_aliran(CachedClient(key), r0))
+                except Exception as e:  # aliran gagal tidak boleh mematikan kalkulator
+                    st.session_state["aliran"] = ("err", str(e) if isinstance(e, ad.AdimologyError) else f"Error tak terduga: {e}")
             try:
                 with st.spinner("Mengambil laporan keuangan..."):
                     st.session_state["fund"] = ("ok", ambil_fundamental(CachedClient(key), r0.params.kode, r0.harga))
@@ -411,6 +444,8 @@ if submitted:
             f_ = fund_[1] if fund_ and fund_[0] == "ok" else None
             ovn_ = st.session_state.get("ovn")
             o_ = ovn_[1] if ovn_ and ovn_[0] == "ok" else None
+            alr_ = st.session_state.get("aliran")
+            a_ = alr_[1] if alr_ and alr_[0] == "ok" else None
             now = dt.datetime.now(ZoneInfo("Asia/Jakarta"))
             waktu = now.strftime("%Y-%m-%d %H:%M WIB")
             nama_file = f"riset_{r0.params.kode}_{now:%Y%m%d_%H%M}"
@@ -418,7 +453,7 @@ if submitted:
             with st.spinner("Menyiapkan dokumen ekspor..."):
                 for jenis, fn in (("xlsx", lp.excel_bytes), ("pdf", lp.pdf_bytes)):
                     try:
-                        exp[jenis] = fn(r0, rk_, f_, waktu, o_)
+                        exp[jenis] = fn(r0, rk_, f_, waktu, o_, a_)
                     except Exception as e:  # ekspor gagal tidak boleh mematikan kalkulator
                         exp[f"{jenis}_err"] = f"{type(e).__name__}: {e}"
             st.session_state["export"] = exp
@@ -460,6 +495,14 @@ with tab_main:
         c[3].metric("Target realistis", fmt(r.calc["t_real_r"]), f"{r.calc['upside_real']:+.1%}")
         c[4].metric("Target max", fmt(r.calc["t_max_r"]), f"{r.calc['upside_max']:+.1%}")
         c[5].metric("SL (low window)", fmt(r.plan["sl"]), f"R/R {r.plan['rr']:.2f}" if pd.notna(r.plan["rr"]) else None, delta_color="off")
+        st.markdown(f"**Rentang target:** {fmt(r.calc['t_real_r'])} – {fmt(r.calc['t_max_r'])} "
+                    f"({r.calc['upside_real']:+.1%} s/d {r.calc['upside_max']:+.1%}) · peluang tercapai belum terukur "
+                    "(menunggu backtest)")
+        al_ = st.session_state.get("aliran")
+        st.dataframe(pd.DataFrame(al.ringkas(r, al_[1] if al_ and al_[0] == "ok" else None)),
+                     hide_index=True, width="stretch")
+        if al_ and al_[0] == "err":
+            st.caption(f"Aliran lanjutan gagal: {al_[1]}")
         st.plotly_chart(make_chart(r), width="stretch")
         st.caption(f"Window {r.tgl_awal} s/d {r.tgl_akhir} ({r.params.window_hari} hari bursa) · "
                    f"barang bandar {fmt(r.calc['barang'])} lot · lot per papan {fmt(r.lot_per_papan)} ({r.lpp_sumber}) · "
@@ -656,6 +699,21 @@ if state and state[0] == "ok":
         st.plotly_chart(harian_chart(r), width="stretch")
         st.info(f"Periode broker summary: **{r.tgl_awal} s/d {r.tgl_akhir}** ({r.params.window_hari} hari bursa, "
                 "atur lewat slider *Window broker summary*). Top net buy/sell dan rincian harian memakai periode ini.", icon="📅")
+        st.caption(f"Lot per papan: {fmt(r.lot_per_papan)} ({r.lpp_sumber}).")
+        al_b = st.session_state.get("aliran")
+        if al_b and al_b[0] == "ok":
+            kc = al_b[1]["konsistensi"]
+            if not kc.empty:
+                st.markdown("**Konsistensi akumulator teratas (materi: cek 1, 3, 7, maks 20 hari)**")
+                st.dataframe(kc, hide_index=True, width="stretch", column_config={
+                    "net_lot": st.column_config.NumberColumn("Net (lot)", format="%,.0f"),
+                    "avg_beli": st.column_config.NumberColumn("Avg beli", format="%,.1f"),
+                    "sama_dengan_bandar": st.column_config.CheckboxColumn("Sama dengan bandar")})
+            top_ng = al_b[1]["nego"]["top"]
+            if top_ng:
+                st.markdown("**Pasar negosiasi (window)**")
+                st.dataframe(pd.DataFrame(top_ng), hide_index=True, width="content",
+                             column_config={"net_lot": st.column_config.NumberColumn("Net (lot)", format="%,.0f")})
         cols = ["code", "name", "net_lot", "porsi_net_%", "buy_avg", "sell_avg", "net_value"]
         cfg = {"code": st.column_config.TextColumn("Kode", width=60),
                "name": st.column_config.TextColumn("Broker", width=170),

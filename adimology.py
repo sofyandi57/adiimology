@@ -154,6 +154,8 @@ class Params:
     risiko_pct: float = 0.01
     fee_beli: float = 0.0015
     fee_jual: float = 0.0025
+    mode_bandar: str = "top1"                  # top1 = broker net beli terbesar; top3 = gabungan 3 akumulator teratas
+    ob_multi: bool = False                     # lot per papan = median 3 snapshot historis (10:00/11:30/14:30)
 
 
 @dataclass
@@ -179,6 +181,7 @@ class Result:
     alasan: list = field(default_factory=list)
     plan: dict = field(default_factory=dict)
     sens: pd.DataFrame | None = None
+    konsentrasi: dict = field(default_factory=dict)
 
 
 # ------------------------------------------------------------------- pengambilan
@@ -248,6 +251,51 @@ def get_orderbook(client: InvezgoClient, kode: str, p: Params) -> dict | None:
                 n_levels=len(bids) + len(offers))
 
 
+OB_HISTORIS_SEJAK = dt.date(2026, 3, 25)       # snapshot orderbook historis Invezgo tersedia sejak tanggal ini
+JAM_SNAPSHOT = ("10:00", "11:30", "14:30")
+
+
+def orderbook_multi(client: InvezgoClient, kode: str, p: Params, tanggal: dt.date) -> list[dict]:
+    """Beberapa snapshot orderbook historis di hari yang sama; median-nya meredam fake bid/offer sesaat."""
+    if tanggal < OB_HISTORIS_SEJAK:
+        return []
+    out = []
+    for jam in JAM_SNAPSHOT:
+        try:
+            ob = get_orderbook(client, kode, replace(p, ob_date=tanggal.isoformat(), ob_time=jam))
+        except AdimologyError:
+            ob = None
+        if ob and ob["n_levels"] > 4:
+            out.append(dict(ob, jam=jam))
+    return out
+
+
+def _wavg(v: pd.Series, w: pd.Series) -> float:
+    m = v.notna() & w.notna() & (w > 0)
+    return float((v[m] * w[m]).sum() / w[m].sum()) if m.any() else np.nan
+
+
+def konsentrasi(bs: pd.DataFrame, excl: set | tuple = ()) -> dict:
+    """Slide 'Broker Summary': akumulasi = lot top 1-3 pembeli jauh > lot yang dijual top 15 penjual."""
+    b = bs[~bs["code"].isin(set(excl))]
+    beli = b[b["net_volume"] > 0].sort_values("net_volume", ascending=False)
+    jual = b[b["net_volume"] < 0].sort_values("net_volume")
+    top3 = float(beli.head(3)["net_volume"].sum()) / 100
+    top15 = float(-jual.head(15)["net_volume"].sum()) / 100
+    rasio = top3 / top15 if top15 > 0 else float("inf") if top3 > 0 else float("nan")
+    n_beli, n_jual = int(len(beli)), int(len(jual))
+    if top3 <= 0:
+        status = "TIDAK ADA AKUMULASI"
+    elif rasio >= 1 and n_jual > n_beli:
+        status = "AKUMULASI TERKONSENTRASI"
+    elif rasio >= 0.5:
+        status = "AKUMULASI SEBAGIAN"
+    else:
+        status = "TERSEBAR"
+    return dict(top3_beli_lot=top3, top15_jual_lot=top15, rasio=rasio, n_beli=n_beli, n_jual=n_jual,
+                top3_kode=list(beli.head(3)["code"]), status=status)
+
+
 # --------------------------------------------------------------------- analisis
 def analyze(client: InvezgoClient, p: Params) -> Result:
     kode = p.kode.strip().upper()
@@ -279,20 +327,28 @@ def analyze(client: InvezgoClient, p: Params) -> Result:
         if kand.empty:
             raise AdimologyError("Tidak ada broker kandidat bandar.")
         row = kand.iloc[0]
-    bandar = dict(code=row["code"], name=row["name"], avg=float(row["buy_avg"]) if pd.notna(row["buy_avg"]) else float("nan"),
-                  net_lot=float(row["net_volume"]) / 100, porsi=float(row["porsi_net_%"]))
+    if p.mode_bandar == "top3" and not p.broker_manual:
+        top = kand[kand["net_volume"] > 0].head(3)
+        w = top["buy_volume"].where(top["buy_avg"].notna(), 0)
+        avg3 = float((top["buy_avg"].fillna(0) * w).sum() / w.sum()) if w.sum() > 0 else float("nan")
+        bandar = dict(code="+".join(top["code"]), name=" + ".join(top["name"].astype(str)), avg=avg3,
+                      net_lot=float(top["net_volume"].sum()) / 100, porsi=float(top["porsi_net_%"].sum()),
+                      codes=list(top["code"]))
+    else:
+        bandar = dict(code=row["code"], name=row["name"], avg=float(row["buy_avg"]) if pd.notna(row["buy_avg"]) else float("nan"),
+                      net_lot=float(row["net_volume"]) / 100, porsi=float(row["porsi_net_%"]), codes=[row["code"]])
     if not np.isfinite(bandar["avg"]):
         raise AdimologyError(f"Broker {bandar['code']} tidak punya transaksi beli di window ini (avg beli kosong).")
 
     rows = []
     for d in hari:
         x = broker_summary(client, kode, d, d, p.investor, p.market)
-        r = x[x["code"] == bandar["code"]] if not x.empty else x
+        r = x[x["code"].isin(bandar["codes"])] if not x.empty else x
         if r.empty:
             rows.append(dict(tgl=d, net_lot=0.0, avg_beli=np.nan, avg_jual=np.nan))
         else:
-            r = r.iloc[0]
-            rows.append(dict(tgl=d, net_lot=r["net_volume"] / 100, avg_beli=r["buy_avg"], avg_jual=r["sell_avg"]))
+            rows.append(dict(tgl=d, net_lot=float(r["net_volume"].sum()) / 100,
+                             avg_beli=_wavg(r["buy_avg"], r["buy_volume"]), avg_jual=_wavg(r["sell_avg"], r["sell_volume"])))
     harian = pd.DataFrame(rows)
     harian["net_kumulatif_lot"] = harian["net_lot"].cumsum()
     net_terakhir = float(harian["net_lot"].iloc[-1])
@@ -301,8 +357,13 @@ def analyze(client: InvezgoClient, p: Params) -> Result:
     floating = harga / bandar["avg"] - 1
 
     ob = get_orderbook(client, kode, p)
+    multi = orderbook_multi(client, kode, p, tgl_akhir) if p.ob_multi and p.lot_per_papan_override <= 0 else []
     if p.lot_per_papan_override > 0:
         lpp, lpp_sumber = float(p.lot_per_papan_override), "manual"
+    elif len(multi) >= 2:
+        lpp = float(np.median([m["lot_per_papan"] for m in multi]))
+        lpp_sumber = f"median {len(multi)} snapshot ({', '.join(m['jam'] for m in multi)} {tgl_akhir})"
+        ob = ob or multi[-1]
     elif ob:
         lpp, lpp_sumber = ob["lot_per_papan"], "orderbook"
     else:
@@ -365,7 +426,7 @@ def analyze(client: InvezgoClient, p: Params) -> Result:
                              max=round_tick(step_up(dasar, q))))
     sens = pd.DataFrame(rows)
 
-    return Result(params=p, tgl_awal=tgl_awal, tgl_akhir=tgl_akhir, harga=harga, chart=chart, bs=bs,
+    return Result(konsentrasi=konsentrasi(bs, excl), params=p, tgl_awal=tgl_awal, tgl_akhir=tgl_akhir, harga=harga, chart=chart, bs=bs,
                   total_vol_lot=total_vol / 100, bandar=bandar, harian=harian, net_terakhir=net_terakhir,
                   distribusi=distribusi, floating=floating, ob=ob, lot_per_papan=lpp, lpp_sumber=lpp_sumber,
                   calc=calc, verdict=verdict, setup_ok=setup_ok, alasan=alasan, plan=plan, sens=sens)

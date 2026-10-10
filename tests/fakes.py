@@ -30,6 +30,9 @@ class FakeClient(ad.InvezgoClient):
             return FIN[params["statement"]]
         if "/keystat/" in path:
             return FIN["KS"]
+        if "/shareholder-above" in path:
+            return {"data": [{"date": "2026-06-01T17:00:00Z", "code": "MCAS", "name": "PT INDUK MCAS",
+                              "format_securities": "CC", "next_pct": 51.0}]}
         if "/chart/multi-time/" in path:
             return INTRADAY
         if "/information/" in path:
@@ -95,3 +98,62 @@ def _intraday(n_hari=40):
 
 
 INTRADAY = _intraday()
+
+
+class BacktestFake(ad.InvezgoClient):
+    """Data sintetis multi-bulan untuk backtest (melintasi OB_START 2026-03-25 agar kedua regime ada).
+
+    AAAA berharga ~100 (fraksi 1), BBBB ~600 (fraksi 5). Semua request dicatat di self.calls.
+    """
+
+    def __init__(self, start="2025-11-03", end="2026-06-30"):
+        super().__init__("x")
+        import datetime as _dt
+        import math as _m
+        self.calls = []
+        self.days, d = [], _dt.date.fromisoformat(start)
+        while d <= _dt.date.fromisoformat(end):
+            if d.weekday() < 5:
+                self.days.append(d)
+            d += _dt.timedelta(days=1)
+        self.bars = {}
+        for kode, base, amp, per, fr in (("AAAA", 110, 25, 9, 1), ("BBBB", 650, 90, 7, 5)):
+            rows, prev = {}, base
+            for k, d in enumerate(self.days):
+                c = round((base + amp * _m.sin(k / per) + 0.05 * k) / fr) * fr
+                o = prev
+                rows[d.isoformat()] = (o, max(o, c) + 2 * fr, min(o, c) - 2 * fr, c, 1_000_000 + 10_000 * (k % 7))
+                prev = c
+            self.bars[kode] = rows
+
+    def _k(self, d):
+        return [x.isoformat() for x in self.days].index(d)
+
+    def get(self, path, params=None):
+        self.calls.append((path, dict(params or {})))
+        kode = path.rstrip("/").split("/")[-1]
+        bars = self.bars.get(kode)
+        if bars is None:
+            raise ad.AdimologyError("Data tidak ditemukan (fake).")
+        if "/chart/stock/" in path:
+            return [dict(date=d + "T00:00:00.000Z", open=o, high=h, low=l, close=c, volume=str(v))
+                    for d, (o, h, l, c, v) in bars.items() if params["from"] <= d <= params["to"]]
+        if "/summary/stock/" in path:
+            f, t = params["from"], params["to"]
+            closes = [b[3] for d, b in bars.items() if f <= d <= t]
+            vol = sum(b[4] for d, b in bars.items() if f <= d <= t)
+            avg = sum(closes) / len(closes) * 0.99
+            if f == t:                                   # harian: distribusi tiap hari ke-4
+                net = -400_000 if self._k(f) % 4 == 0 else 20_000
+                return [_row("CC", net, avg, "MANDIRI") | {"buy_volume": str(vol)}]
+            import math as _m
+            net = 300_000 if _m.sin(self._k(f) / 5) > -0.3 else -200_000
+            return [_row("CC", net, avg, "MANDIRI") | {"buy_volume": str(vol // 2)},
+                    _row("XL", 900_000, avg * 1.03, "STOCKBIT") | {"buy_volume": str(vol // 2)},
+                    _row("YU", -50_000, avg, "CGS")]
+        if "/order-book/" in path:
+            c = bars[params["date"]][3]
+            fr = ad.fraksi(c)
+            return {"bid": [{f"bid{j}price": c - j * fr, f"bid{j}lot": 1500} for j in range(1, 6)],
+                    "offer": [{f"offer{j}price": c + j * fr, f"offer{j}lot": 1500} for j in range(1, 6)]}
+        raise AssertionError(path)

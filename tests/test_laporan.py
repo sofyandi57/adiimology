@@ -59,3 +59,10 @@ def test_export_without_technical_or_fundamental():
     r, _, _ = _inputs()
     assert lp.pdf_bytes(r, None, None, "x")[:4] == b"%PDF"
     assert "Ringkasan" in load_workbook(io.BytesIO(lp.excel_bytes(r, None, None, "x"))).sheetnames
+
+
+def test_beli_needs_concentrated_accumulation():
+    r, rk, f = _inputs()
+    r.konsentrasi = dict(r.konsentrasi, status="TERSEBAR")
+    kep, alasan = lp.keputusan(r, dict(rk, verdict="BELI DI AREA ENTRY"), f)
+    assert kep == "TUNGGU" and any("tidak terkonsentrasi" in a for a in alasan)

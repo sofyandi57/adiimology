@@ -8,8 +8,9 @@ Target harga metode Adimology dari data **broker summary + orderbook Invezgo**. 
 - `fundamental.py`: tab Fundamental (PnL, neraca, arus kas per kuartal dari data YTD Invezgo, valuasi, peringatan kuning / sorotan hijau)
 - `laporan.py`: tombol Export: PDF dokumen riset (keputusan BELI / TUNGGU / HINDARI-JUAL) dan Excel (semua data per sheet)
 - `intraday.py`: statistik BPJP/BSJP dari candle 30 menit (volume pagi/sore vs pergerakan sesi 1 berikutnya, target & jam jual)
+- `aliran.py`: konfirmasi aliran: asing, pasar nego, konsistensi bandar 1/3/7/20 hari, afiliasi broker dengan pemegang saham >= 5%
 - `teknikal.py`: analisa teknikal tab Rekomendasi (support/resistance, MA 5/20/50/100/200, RSI, MACD, ATR, bandar value)
-- `tests/`: 38 tes (login, teknikal, BPJP/BSJP, fundamental, ekspor, rumus, fraksi bertingkat, kasus MCAS sama dengan output Colab, UI smoke test)
+- `tests/`: 43 tes (login, aliran, teknikal, BPJP/BSJP, fundamental, ekspor, rumus, fraksi bertingkat, kasus MCAS sama dengan output Colab, UI smoke test)
 
 ## Jalankan lokal
 ```bash

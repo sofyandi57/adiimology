@@ -73,6 +73,12 @@ def test_app_runs_and_computes(monkeypatch, tmp_path):
     ovn = at.session_state["ovn"]
     assert ovn[0] == "ok" and ovn[1]["n_hari"] == 40 and ovn[1]["sinyal"]["bsjp"] is not None
     assert any("BSJP" in m.value for m in at.markdown)
+    aliran = at.session_state["aliran"]
+    assert aliran[0] == "ok", aliran
+    konf = [d.value for d in at.dataframe if "Konfirmasi" in d.value.columns][0]
+    assert {"Konsentrasi (top 3 beli vs top 15 jual)", "Asing (window)", "Pasar negosiasi (window)",
+            "Konsistensi bandar 1/3/7/20 hari", "Afiliasi pemegang saham ≥5%"} <= set(konf["Konfirmasi"])
+    assert konf.set_index("Konfirmasi").loc["Afiliasi pemegang saham ≥5%", "Status"] == "TERAFILIASI"
     exp = at.session_state["export"]
     assert exp["pdf"][:4] == b"%PDF" and exp["xlsx"][:2] == b"PK" and exp["nama"].startswith("riset_MCAS_")
     # tombol Petunjuk membuka dialog tanpa error
