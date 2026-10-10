@@ -33,7 +33,48 @@ def get_chart_panjang(client: ad.InvezgoClient, kode: str, tanggal_akhir: dt.dat
         df = df[df["tgl"] <= tanggal_akhir]
     if df.empty:
         raise ad.AdimologyError("Tidak ada data harga sampai tanggal yang dipilih.")
-    return df.reset_index(drop=True)
+    df, events = sesuaikan_split(df.reset_index(drop=True))
+    df.attrs["split"] = events
+    return df
+
+
+RASIO_SPLIT = (2, 3, 4, 5, 8, 10, 15, 20, 25, 30, 40, 50, 100)
+
+
+def sesuaikan_split(df: pd.DataFrame, ambang: float = 1.6) -> tuple[pd.DataFrame, list[dict]]:
+    """Sesuaikan harga lama untuk stock split / reverse split.
+
+    Data Invezgo tidak disesuaikan. Batas auto-reject BEI membuat lompatan > ~35% sehari mustahil
+    tanpa aksi korporasi, jadi rasio close kemarin / open hari ini >= ambang (atau <= 1/ambang)
+    dianggap split. Rasio dicocokkan ke rasio split umum bila dekat (DSSA 9-4-2026: 67.000 -> open 2.600
+    = 25,8x -> 1:25).
+    """
+    df = df.copy()
+    events = []
+    for i in range(1, len(df)):
+        prev, cur = df.at[i - 1, "close"], df.at[i, "open"] or df.at[i, "close"]
+        if not prev or not cur or pd.isna(prev) or pd.isna(cur):
+            continue
+        r = prev / cur
+        if r >= ambang or r <= 1 / ambang:
+            f = r if r >= 1 else 1 / r
+            umum = min(RASIO_SPLIT, key=lambda c: abs(np.log(f / c)))
+            bulat = abs(np.log(f / umum)) < np.log(1.15)      # dalam 15%: harga hari itu ikut bergerak
+            f = umum if bulat else f
+            faktor = f if r >= 1 else 1 / f
+            df.loc[: i - 1, ["open", "high", "low", "close"]] /= faktor
+            df.loc[: i - 1, "volume"] *= faktor
+            if bulat:
+                jenis = f"stock split 1:{f:g}" if r >= 1 else f"reverse split {f:g}:1"
+            else:
+                jenis = f"penyesuaian aksi korporasi (rasio {faktor:.2f})"
+            events.append({"tgl": df.at[i, "tgl"], "faktor": faktor, "jenis": jenis})
+    return df, events
+
+
+def _floor_tick(x: float) -> float:
+    f = ad.fraksi(x)
+    return np.floor(x / f + 1e-9) * f
 
 
 # --------------------------------------------------------------------- indikator
@@ -145,19 +186,30 @@ def rekomendasi(df: pd.DataFrame, bv: dict | None = None, min_rr: float = 1.5, m
         ma_bawah = [v for v in (_val(last["ma20"]), _val(last["ma50"])) if v and v < harga]
         s1, basis = (max(ma_bawah), "MA") if ma_bawah else (float(ind["low"].tail(20).min()), "low 20 hari")
     entry_lo = ad.round_tick(s1)
-    entry_hi = ad.round_tick(max(s1 + 0.5 * atr_, s1 * 1.01))
-    entry_mid = (entry_lo + entry_hi) / 2
+    entry_hi_sup = ad.round_tick(max(s1 + 0.5 * atr_, s1 * 1.01))   # batas atas zona support
 
     # SL: di bawah support terdekat sejauh 1 ATR
     sl = ad.round_tick(entry_lo - atr_)
 
-    # target: resistance di atas area entry; cadangan = proyeksi 2R / 3R
-    res_atas = [c["harga"] for c in res if c["harga"] > entry_hi]
-    risk = max(entry_mid - sl, 1e-9)
-    tp1 = res_atas[0] if res_atas else ad.round_tick(entry_mid + 2 * risk)
-    tp2 = res_atas[1] if len(res_atas) > 1 else ad.round_tick(max(tp1, entry_mid) + risk)
+    # target: resistance di atas zona support; cadangan = proyeksi 2R / 3R
+    res_atas = [c["harga"] for c in res if c["harga"] > entry_hi_sup]
+    risk0 = max((entry_lo + entry_hi_sup) / 2 - sl, 1e-9)
+    tp1 = res_atas[0] if res_atas else ad.round_tick((entry_lo + entry_hi_sup) / 2 + 2 * risk0)
+    tp2 = res_atas[1] if len(res_atas) > 1 else ad.round_tick(max(tp1, entry_lo) + risk0)
     tp_basis = "resistance" if res_atas else "proyeksi R"
-    rr = (tp1 - entry_mid) / risk
+
+    # harga entry maksimal agar R/R >= min_rr:  (tp - e) / (e - sl) >= min_rr  ->  e <= (tp + min_rr*sl) / (1 + min_rr)
+    def entry_maks_untuk(tp):
+        return _floor_tick((tp + min_rr * sl) / (1 + min_rr))
+    target, target_nama = tp1, "TP1"
+    entry_maks = entry_maks_untuk(tp1)
+    if entry_maks < entry_lo and tp2 > tp1:
+        target, target_nama, entry_maks = tp2, "TP2", entry_maks_untuk(tp2)
+    entry_hi = min(entry_hi_sup, entry_maks)
+    zona_valid = entry_hi >= entry_lo
+    entry_mid = (entry_lo + entry_hi) / 2 if zona_valid else entry_lo
+    rr = (target - entry_mid) / max(entry_mid - sl, 1e-9)
+    rr_harga = (target - harga) / (harga - sl) if harga > sl else float("nan")
 
     # skor: tren, momentum, bandar
     poin = []
@@ -188,8 +240,8 @@ def rekomendasi(df: pd.DataFrame, bv: dict | None = None, min_rr: float = 1.5, m
 
     skor = sum(p for p, _ in poin)
     skor_max = sum(abs(p) for p, _ in poin) or 1
-    di_area = entry_lo <= harga <= entry_hi
-    jarak_entry = harga / entry_hi - 1
+    di_area = zona_valid and entry_lo <= harga <= entry_hi
+    jarak_entry = harga / entry_hi - 1 if zona_valid else float("nan")
 
     if len(ind) < min_bar:
         verdict, alasan = "TIDAK TERUKUR", f"data harga hanya {len(ind)} hari bursa (minimal {min_bar})"
@@ -197,15 +249,19 @@ def rekomendasi(df: pd.DataFrame, bv: dict | None = None, min_rr: float = 1.5, m
         verdict, alasan = "HINDARI", "harga sudah menembus SL di bawah support"
     elif skor <= 0:
         verdict, alasan = "HINDARI", "mayoritas indikator dan aliran bandar melawan"
-    elif rr < min_rr:
-        verdict, alasan = "TUNGGU", f"R/R {rr:.2f} di bawah {min_rr:.1f}, target terlalu dekat"
+    elif not zona_valid:
+        verdict, alasan = "TUNGGU", (f"tidak ada harga di zona support ({entry_lo:,.0f}-{entry_hi_sup:,.0f}) yang memberi "
+                                     f"R/R {min_rr:.1f} ke target {target:,.0f}; tunggu breakout di atas {tp1:,.0f} atau koreksi lebih dalam")
     elif di_area:
-        verdict, alasan = "BELI DI AREA ENTRY", "harga sudah di area entry, indikator mendukung"
+        verdict, alasan = "BELI DI AREA ENTRY", f"harga di area beli, R/R {rr:.2f} ke {target_nama}, indikator mendukung"
     else:
-        verdict, alasan = "TUNGGU KE AREA ENTRY", f"harga {jarak_entry:+.1%} di atas area entry, jangan kejar"
+        verdict, alasan = "TUNGGU KE AREA ENTRY", (f"harga {jarak_entry:+.1%} di atas entry maksimal {entry_hi:,.0f} "
+                                                   f"(R/R {min_rr:.1f}); jangan kejar")
 
     return dict(harga=harga, tgl=ind["tgl"].iloc[-1], ind=ind, sup=sup, res=res,
-                entry_lo=entry_lo, entry_hi=entry_hi, entry_basis=basis, sl=sl,
+                entry_lo=entry_lo, entry_hi=entry_hi, entry_hi_sup=entry_hi_sup, entry_maks=entry_maks,
+                zona_valid=zona_valid, target=target, target_nama=target_nama, min_rr=min_rr, rr_harga=rr_harga,
+                entry_basis=basis, sl=sl, split=df.attrs.get("split", []),
                 tp1=tp1, tp2=tp2, tp_basis=tp_basis, rr=rr, atr=atr_,
                 ma=ma, rsi=r, macd=m, signal=s, hist=h, bandar=bv or {},
                 poin=poin, skor=skor, skor_max=skor_max, verdict=verdict, alasan=alasan,

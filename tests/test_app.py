@@ -65,7 +65,7 @@ def test_app_runs_and_computes(monkeypatch, tmp_path):
     tek = at.session_state["tek"]
     assert tek[0] == "ok" and tek[1]["verdict"] == "TIDAK TERUKUR"
     rek = [d.value for d in at.dataframe if "Catatan" in d.value.columns][0]
-    assert {"Area entry", "Stop loss", "Target jual 1", "Target jual 2"} <= set(rek["Keterangan"])
+    assert {"Area beli (entry)", "Entry maksimal (R/R 1,5)", "Stop loss", "Area jual (TP1 – TP2)"} <= set(rek["Keterangan"])
     fund = at.session_state["fund"]
     assert fund[0] == "ok" and fund[1]["periode"] == "Q2 2026" and fund[1]["nama"] == "M Cash Integrasi"
     assert any("naik" in x.value for x in at.success)                 # sorotan hijau

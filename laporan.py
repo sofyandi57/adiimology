@@ -80,6 +80,10 @@ def _safe(t) -> str:
     return s.encode("latin-1", "ignore").decode("latin-1").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
+def _area(rk: dict) -> str:
+    return f"{_n(rk['entry_lo'])} - {_n(rk['entry_hi'])}" if rk["zona_valid"] else "tidak ada (R/R kurang)"
+
+
 def ringkasan_rows(r, rk: dict | None, f: dict | None, waktu: str) -> list[tuple[str, str]]:
     kep, _ = keputusan(r, rk, f)
     rows = [("Kode", r.params.kode), ("Nama", (f or {}).get("nama") or "-"), ("Waktu analisa", waktu),
@@ -90,9 +94,11 @@ def ringkasan_rows(r, rk: dict | None, f: dict | None, waktu: str) -> list[tuple
             ("SL low window (Adimology)", _n(r.plan["sl"])),
             ("Window broker summary", f"{r.tgl_awal} s/d {r.tgl_akhir} ({r.params.window_hari} hari)")]
     if rk:
-        rows += [("Verdict teknikal", rk["verdict"]), ("Area entry", f"{_n(rk['entry_lo'])} - {_n(rk['entry_hi'])}"),
-                 ("Stop loss (teknikal)", _n(rk["sl"])), ("Target jual 1", _n(rk["tp1"])), ("Target jual 2", _n(rk["tp2"])),
-                 ("R/R (TP1)", _n(rk["rr"], 2)), ("RSI 14", _n(rk["rsi"], 1)),
+        rows += [("Verdict teknikal", rk["verdict"]), ("Area beli", _area(rk)),
+                 (f"Entry maksimal (R/R {rk['min_rr']:.1f})", _n(rk["entry_maks"])),
+                 ("Stop loss (teknikal)", _n(rk["sl"])), ("Area jual (TP1 - TP2)", f"{_n(rk['tp1'])} - {_n(rk['tp2'])}"),
+                 ("Target utama", f"{rk['target_nama']} {_n(rk['target'])}"),
+                 ("R/R rata-rata area beli", _n(rk["rr"], 2)), ("RSI 14", _n(rk["rsi"], 1)),
                  ("Bandar value (status top-5)", rk["bandar"].get("status", "-"))]
     if f:
         rows.append(("Laporan keuangan terakhir", f["periode"]))
@@ -160,7 +166,9 @@ def _chart_png(r, rk: dict | None) -> bytes:
         for n, c in {20: "#f59e0b", 50: "#10b981", 200: "#ef4444"}.items():
             if d[f"ma{n}"].notna().any():
                 ax.plot(x, d[f"ma{n}"], color=c, lw=1, label=f"MA{n}")
-        ax.axhspan(rk["entry_lo"], rk["entry_hi"], color="#2563eb", alpha=0.12, label="Area entry")
+        if rk["zona_valid"]:
+            ax.axhspan(rk["entry_lo"], rk["entry_hi"], color="#2563eb", alpha=0.15, label="Area beli")
+        ax.axhspan(rk["tp1"], rk["tp2"], color="#16a34a", alpha=0.10, label="Area jual")
         lines = [(rk["tp1"], "TP1", "#16a34a"), (rk["tp2"], "TP2", "#15803d"), (rk["sl"], "SL", "#dc2626")]
         ticks = d["tgl"].astype(str).tolist()
     else:
@@ -235,12 +243,15 @@ def pdf_bytes(r, rk: dict | None, f: dict | None, waktu: str) -> bytes:
 
     el.append(Paragraph("Rencana trading", h2))
     if rk:
-        plan = [["Area entry", "Stop loss", "Target jual 1", "Target jual 2", "R/R (TP1)", "Harga"],
-                [f"{_n(rk['entry_lo'])} - {_n(rk['entry_hi'])}", _n(rk["sl"]),
-                 f"{_n(rk['tp1'])} ({_pct(rk['tp1'] / rk['harga'] - 1)})", f"{_n(rk['tp2'])} ({_pct(rk['tp2'] / rk['harga'] - 1)})",
-                 _n(rk["rr"], 2), _n(rk["harga"])]]
-        el.append(_tbl(plan, [W / 6] * 6))
-        el.append(Paragraph(_safe(f"Area entry dari {rk['entry_basis']}; SL = support - 1 ATR14; target dari {rk['tp_basis']}."), small))
+        plan = [["Harga", "Area beli", f"Entry maks (R/R {rk['min_rr']:.1f})", "Stop loss", "Area jual (TP1-TP2)", "R/R"],
+                [_n(rk["harga"]), _area(rk), _n(rk["entry_maks"]), _n(rk["sl"]),
+                 f"{_n(rk['tp1'])} - {_n(rk['tp2'])} ({_pct(rk['tp1'] / rk['harga'] - 1)} s/d {_pct(rk['tp2'] / rk['harga'] - 1)})",
+                 _n(rk["rr"], 2)]]
+        el.append(_tbl(plan, [W * 0.11, W * 0.16, W * 0.16, W * 0.11, W * 0.34, W * 0.12]))
+        el.append(Paragraph(_safe(f"Area beli = {rk['entry_basis']} s/d entry maksimal yang masih memberi R/R {rk['min_rr']:.1f} ke "
+                                  f"{rk['target_nama']} {_n(rk['target'])}; SL = support - 1 ATR14; area jual dari {rk['tp_basis']}."), small))
+        for ev in rk.get("split", []):
+            el.append(Paragraph(_safe(f"Harga sebelum {ev['tgl']} disesuaikan untuk {ev['jenis']}."), small))
     else:
         el.append(Paragraph("Analisa teknikal tidak tersedia.", p))
     el += [Spacer(1, 6), Image(io.BytesIO(_chart_png(r, rk)), width=W, height=W * 0.36)]

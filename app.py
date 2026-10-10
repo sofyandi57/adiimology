@@ -223,8 +223,11 @@ def rekomendasi_chart(rk: dict) -> go.Figure:
     for n, c in MA_WARNA.items():
         if d[f"ma{n}"].notna().any():
             fig.add_scatter(x=x, y=d[f"ma{n}"], mode="lines", name=f"MA{n}", line=dict(color=c, width=1.2), row=1, col=1)
-    fig.add_hrect(y0=rk["entry_lo"], y1=rk["entry_hi"], fillcolor="#2563eb", opacity=0.12, line_width=0,
-                  annotation_text="Area entry", annotation_position="top left", row=1, col=1)
+    if rk["zona_valid"]:
+        fig.add_hrect(y0=rk["entry_lo"], y1=rk["entry_hi"], fillcolor="#2563eb", opacity=0.15, line_width=0,
+                      annotation_text="Area beli", annotation_position="top left", row=1, col=1)
+    fig.add_hrect(y0=rk["tp1"], y1=rk["tp2"], fillcolor="#16a34a", opacity=0.10, line_width=0,
+                  annotation_text="Area jual", annotation_position="top left", row=1, col=1)
     for y, nama, warna in [(rk["tp1"], "TP1", "#16a34a"), (rk["tp2"], "TP2", "#15803d"), (rk["sl"], "SL", "#dc2626")]:
         fig.add_hline(y=y, line_color=warna, line_dash="dash", line_width=1, row=1, col=1,
                       annotation_text=f"{nama} {y:,.0f}", annotation_position="top right", annotation_font_size=11)
@@ -295,8 +298,11 @@ PETUNJUK = """
 
 **Membaca tab Rekomendasi**
 - **BELI DI AREA ENTRY**: harga sudah di area entry, indikator & bandar mendukung, R/R cukup.
-- **TUNGGU KE AREA ENTRY**: setup bagus tapi harga di atas area entry. Pasang antrean di area entry, jangan kejar.
-- **TUNGGU**: target terlalu dekat dibanding risiko (R/R kurang).
+- **TUNGGU KE AREA ENTRY**: setup bagus tapi harga di atas entry maksimal. Pasang antrean di area beli, jangan kejar.
+- **TUNGGU**: tidak ada harga di zona support yang memberi R/R 1,5 (target terlalu dekat).
+- **Area beli** = support s/d **entry maksimal** (harga tertinggi yang masih memberi R/R ≥ 1,5 ke target).
+  **Area jual** = TP1 s/d TP2 (resistance). Stock split terdeteksi otomatis dan harga lama disesuaikan.
+- Tab **Broker** menampilkan periode broker summary (tanggal awal s/d akhir window).
 - **HINDARI**: mayoritas indikator/aliran bandar melawan, atau harga sudah tembus SL.
 - **TIDAK TERUKUR**: data harga kurang dari 60 hari bursa (mis. saham baru IPO).
 
@@ -459,6 +465,25 @@ with tab_main:
             st.write("Harga tidak di atas SL atau modal tidak cukup, ukuran posisi tidak dihitung.")
 
 
+def baris_rencana(rk: dict) -> list[dict]:
+    mr = f"{rk['min_rr']:.1f}".replace(".", ",")
+    area_beli = (f"{rk['entry_lo']:,.0f} – {rk['entry_hi']:,.0f}" if rk["zona_valid"] else "tidak ada")
+    return [
+        {"Keterangan": "Harga terakhir", "Nilai": fmt(rk["harga"]),
+         "Catatan": f"data s/d {rk['tgl']} · R/R jika beli di harga ini: {fmt(rk['rr_harga'], 2)}"},
+        {"Keterangan": "Area beli (entry)", "Nilai": area_beli,
+         "Catatan": (f"support {rk['entry_lo']:,.0f} s/d entry maksimal; R/R rata-rata {rk['rr']:.2f} ke {rk['target_nama']}"
+                     if rk["zona_valid"] else f"zona support {rk['entry_lo']:,.0f} – {rk['entry_hi_sup']:,.0f} tidak memberi R/R {mr}")},
+        {"Keterangan": f"Entry maksimal (R/R {mr})", "Nilai": fmt(rk["entry_maks"]),
+         "Catatan": f"beli di atas harga ini R/R ke {rk['target_nama']} {rk['target']:,.0f} < {mr}"},
+        {"Keterangan": "Stop loss", "Nilai": fmt(rk["sl"]), "Catatan": f"support − 1 ATR · {rk['sl'] / rk['entry_lo'] - 1:+.1%} dari support"},
+        {"Keterangan": "Area jual (TP1 – TP2)", "Nilai": f"{rk['tp1']:,.0f} – {rk['tp2']:,.0f}",
+         "Catatan": f"{rk['tp1'] / rk['harga'] - 1:+.1%} s/d {rk['tp2'] / rk['harga'] - 1:+.1%} dari harga · {rk['tp_basis']}"},
+        {"Keterangan": "Target utama", "Nilai": f"{rk['target_nama']} {rk['target']:,.0f}",
+         "Catatan": "TP1 terlalu dekat, target utama dipindah ke TP2" if rk["target_nama"] == "TP2" else "resistance terdekat"},
+    ]
+
+
 def rp_milyar(x):
     return "-" if x is None or pd.isna(x) else f"Rp{x / 1e9:+,.2f} M"
 
@@ -475,14 +500,9 @@ with tab_rek:
         box = {"BELI DI AREA ENTRY": st.success, "TUNGGU KE AREA ENTRY": st.info,
                "TUNGGU": st.warning, "HINDARI": st.error, "TIDAK TERUKUR": st.warning}[rk["verdict"]]
         box(f"**{kode_rk} → {rk['verdict']}**: {rk['alasan']} · skor {rk['skor']:+d} dari ±{rk['skor_max']}")
-        st.dataframe(pd.DataFrame([
-            {"Keterangan": "Harga terakhir", "Nilai": fmt(rk["harga"]), "Catatan": f"data s/d {rk['tgl']}"},
-            {"Keterangan": "Area entry", "Nilai": f"{rk['entry_lo']:,.0f} – {rk['entry_hi']:,.0f}", "Catatan": f"dasar: {rk['entry_basis']}"},
-            {"Keterangan": "Stop loss", "Nilai": fmt(rk["sl"]), "Catatan": f"{rk['sl'] / rk['entry_lo'] - 1:+.1%} dari bawah area entry"},
-            {"Keterangan": "Target jual 1", "Nilai": fmt(rk["tp1"]), "Catatan": f"{rk['tp1'] / rk['harga'] - 1:+.1%} dari harga · {rk['tp_basis']}"},
-            {"Keterangan": "Target jual 2", "Nilai": fmt(rk["tp2"]), "Catatan": f"{rk['tp2'] / rk['harga'] - 1:+.1%} dari harga"},
-            {"Keterangan": "R/R (ke TP1)", "Nilai": f"{rk['rr']:.2f}", "Catatan": "minimal 1,5 untuk BELI"}]),
-            hide_index=True, width="content")
+        for ev in rk.get("split", []):
+            st.info(f"Harga sebelum {ev['tgl']} disesuaikan untuk {ev['jenis']} supaya MA, support/resistance tidak rusak.", icon="ℹ️")
+        st.dataframe(pd.DataFrame(baris_rencana(rk)), hide_index=True, width="content")
         st.plotly_chart(rekomendasi_chart(rk), width="stretch")
 
         k1, k2, k3 = st.columns(3)
@@ -556,8 +576,12 @@ if state and state[0] == "ok":
         st.write(f"**Bandar terpilih:** {r.bandar['code']} ({r.bandar['name']}) · net {fmt(r.bandar['net_lot'])} lot · "
                  f"{r.bandar['porsi']:.1f}% dari volume window ({fmt(r.total_vol_lot)} lot)")
         st.plotly_chart(harian_chart(r), width="stretch")
+        st.info(f"Periode broker summary: **{r.tgl_awal} s/d {r.tgl_akhir}** ({r.params.window_hari} hari bursa, "
+                "atur lewat slider *Window broker summary*). Top net buy/sell dan rincian harian memakai periode ini.", icon="📅")
         cols = ["code", "name", "net_lot", "porsi_net_%", "buy_avg", "sell_avg", "net_value"]
-        cfg = {"net_lot": st.column_config.NumberColumn("Net (lot)", format="%,.0f"),
+        cfg = {"code": st.column_config.TextColumn("Kode", width=60),
+               "name": st.column_config.TextColumn("Broker", width=170),
+               "net_lot": st.column_config.NumberColumn("Net (lot)", format="%,.0f"),
                "porsi_net_%": st.column_config.NumberColumn("Porsi %", format="%.2f"),
                "buy_avg": st.column_config.NumberColumn("Avg beli", format="%.1f"),
                "sell_avg": st.column_config.NumberColumn("Avg jual", format="%.1f"),
@@ -567,8 +591,16 @@ if state and state[0] == "ok":
         a1.dataframe(r.bs.sort_values("net_volume", ascending=False).head(10)[cols], hide_index=True, column_config=cfg, width="stretch")
         a2.markdown("**Top net sell**")
         a2.dataframe(r.bs.sort_values("net_volume").head(10)[cols], hide_index=True, column_config=cfg, width="stretch")
-        st.markdown("**Rincian harian bandar**")
-        st.dataframe(r.harian, hide_index=True, width="stretch")
+        st.markdown(f"**Rincian harian bandar {r.bandar['code']}** ({r.tgl_awal} s/d {r.tgl_akhir})")
+        hr = r.harian.copy()
+        for c in ["net_lot", "avg_beli", "avg_jual", "net_kumulatif_lot"]:
+            hr[c] = pd.to_numeric(hr[c], errors="coerce")
+        st.dataframe(hr, hide_index=True, width="stretch", column_config={
+            "tgl": st.column_config.TextColumn("Tanggal"),
+            "net_lot": st.column_config.NumberColumn("Net (lot)", format="%,.0f"),
+            "avg_beli": st.column_config.NumberColumn("Avg beli", format="%,.1f"),
+            "avg_jual": st.column_config.NumberColumn("Avg jual", format="%,.1f"),
+            "net_kumulatif_lot": st.column_config.NumberColumn("Kumulatif (lot)", format="%,.0f")})
         st.caption("Round trip (beli lalu jual habis dalam window) tidak terdeteksi otomatis. Lihat tabel top net buy/sell "
                    "atau pilih broker manual.")
     with tab_ob:
