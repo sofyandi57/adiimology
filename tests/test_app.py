@@ -64,7 +64,8 @@ def test_app_runs_and_computes(monkeypatch, tmp_path):
     # tab Rekomendasi terisi (data tiruan hanya 5 hari -> TIDAK TERUKUR, tapi tetap tampil tanpa error)
     tek = at.session_state["tek"]
     assert tek[0] == "ok" and tek[1]["verdict"] == "TIDAK TERUKUR"
-    assert {"Area entry", "Stop loss", "Target jual 1", "Target jual 2"} <= {m.label for m in at.metric}
+    rek = [d.value for d in at.dataframe if "Catatan" in d.value.columns][0]
+    assert {"Area entry", "Stop loss", "Target jual 1", "Target jual 2"} <= set(rek["Keterangan"])
     fund = at.session_state["fund"]
     assert fund[0] == "ok" and fund[1]["periode"] == "Q2 2026" and fund[1]["nama"] == "M Cash Integrasi"
     assert any("naik" in x.value for x in at.success)                 # sorotan hijau

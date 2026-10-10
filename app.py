@@ -251,8 +251,16 @@ def ambil_fundamental(client: ad.InvezgoClient, kode: str, harga: float) -> dict
             return client.get(path, params)
         except Exception:
             return None
-    q = {"type": "Q", "limit": fd.N_KUARTAL}
-    lap = {s: client.get(f"/analysis/financial-statement/{kode}", {"statement": s, **q}) for s in ("IS", "BS", "CF")}
+    def laporan(statement):
+        # Invezgo membalas 422 bila limit > jumlah periode yang tersedia (mis. emiten baru IPO)
+        for limit in (fd.N_KUARTAL, 8, 5, 4, 2, 1):
+            try:
+                return client.get(f"/analysis/financial-statement/{kode}",
+                                  {"statement": statement, "type": "Q", "limit": limit})
+            except ad.ParamDitolak:
+                continue
+        raise ad.AdimologyError(f"Laporan keuangan {kode} ({statement}) belum tersedia di Invezgo.")
+    lap = {s: laporan(s) for s in ("IS", "BS", "CF")}
     return fd.analisa(opsional(f"/analysis/information/{kode}"), lap["IS"], lap["BS"], lap["CF"],
                       opsional(f"/analysis/keystat/{kode}", {"type": "Q", "limit": 8}), harga)
 
@@ -467,13 +475,14 @@ with tab_rek:
         box = {"BELI DI AREA ENTRY": st.success, "TUNGGU KE AREA ENTRY": st.info,
                "TUNGGU": st.warning, "HINDARI": st.error, "TIDAK TERUKUR": st.warning}[rk["verdict"]]
         box(f"**{kode_rk} → {rk['verdict']}**: {rk['alasan']} · skor {rk['skor']:+d} dari ±{rk['skor_max']}")
-        c = st.columns(6)
-        c[0].metric("Harga", fmt(rk["harga"]))
-        c[1].metric("Area entry", f"{rk['entry_lo']:,.0f} – {rk['entry_hi']:,.0f}", f"dasar: {rk['entry_basis']}", delta_color="off")
-        c[2].metric("Stop loss", fmt(rk["sl"]), f"{rk['sl'] / rk['entry_lo'] - 1:+.1%} dari entry", delta_color="off")
-        c[3].metric("Target jual 1", fmt(rk["tp1"]), f"{rk['tp1'] / rk['harga'] - 1:+.1%}")
-        c[4].metric("Target jual 2", fmt(rk["tp2"]), f"{rk['tp2'] / rk['harga'] - 1:+.1%}")
-        c[5].metric("R/R (TP1)", f"{rk['rr']:.2f}", f"target: {rk['tp_basis']}", delta_color="off")
+        st.dataframe(pd.DataFrame([
+            {"Keterangan": "Harga terakhir", "Nilai": fmt(rk["harga"]), "Catatan": f"data s/d {rk['tgl']}"},
+            {"Keterangan": "Area entry", "Nilai": f"{rk['entry_lo']:,.0f} – {rk['entry_hi']:,.0f}", "Catatan": f"dasar: {rk['entry_basis']}"},
+            {"Keterangan": "Stop loss", "Nilai": fmt(rk["sl"]), "Catatan": f"{rk['sl'] / rk['entry_lo'] - 1:+.1%} dari bawah area entry"},
+            {"Keterangan": "Target jual 1", "Nilai": fmt(rk["tp1"]), "Catatan": f"{rk['tp1'] / rk['harga'] - 1:+.1%} dari harga · {rk['tp_basis']}"},
+            {"Keterangan": "Target jual 2", "Nilai": fmt(rk["tp2"]), "Catatan": f"{rk['tp2'] / rk['harga'] - 1:+.1%} dari harga"},
+            {"Keterangan": "R/R (ke TP1)", "Nilai": f"{rk['rr']:.2f}", "Catatan": "minimal 1,5 untuk BELI"}]),
+            hide_index=True, width="content")
         st.plotly_chart(rekomendasi_chart(rk), width="stretch")
 
         k1, k2, k3 = st.columns(3)

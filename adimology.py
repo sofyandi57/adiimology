@@ -22,6 +22,10 @@ class AdimologyError(Exception):
     """Error yang pesannya aman ditampilkan ke pengguna."""
 
 
+class ParamDitolak(AdimologyError):
+    """API membalas 422: parameter tidak bisa dipenuhi (mis. limit melebihi data yang tersedia)."""
+
+
 # --------------------------------------------------------------------------- util
 def _num(x: Any, default: float = 0.0) -> float:
     try:
@@ -102,6 +106,8 @@ def fetch_json(api_key: str, path: str, params_items: tuple, retries: int = 3) -
             raise AdimologyError("API key Invezgo ditolak (401/403). Periksa key dan paket langganan Anda.")
         if r.status_code == 404:
             raise AdimologyError(f"Data tidak ditemukan ({path}). Periksa kode saham.")
+        if r.status_code == 422:  # tidak perlu diulang; pemanggil boleh mencoba parameter lain
+            raise ParamDitolak(f"Parameter ditolak API (422) untuk {path}.")
         try:
             r.raise_for_status()
         except requests.RequestException as e:

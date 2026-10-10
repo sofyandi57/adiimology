@@ -61,3 +61,16 @@ def test_bad_code_and_unknown_broker():
         ad.analyze(mcas(), ad.Params(kode="TOOLONG"))
     with pytest.raises(ad.AdimologyError):
         ad.analyze(mcas(), ad.Params(kode="MCAS", broker_manual="ZZ"))
+
+
+def test_422_raises_param_ditolak_without_retry(monkeypatch):
+    import requests
+    calls = []
+
+    class R422:
+        status_code = 422
+
+    monkeypatch.setattr(requests, "get", lambda *a, **k: calls.append(1) or R422())
+    with pytest.raises(ad.ParamDitolak):
+        ad.fetch_json("k", "/analysis/financial-statement/KETR", (("limit", "12"),))
+    assert len(calls) == 1

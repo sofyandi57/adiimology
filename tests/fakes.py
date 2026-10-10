@@ -25,6 +25,8 @@ class FakeClient(ad.InvezgoClient):
         if "/order-book/" in path:
             return self.ob
         if "/financial-statement/" in path:
+            if int(params.get("limit", 1)) > len(_KS):          # perilaku Invezgo: 422
+                raise ad.ParamDitolak("422")
             return FIN[params["statement"]]
         if "/keystat/" in path:
             return FIN["KS"]
