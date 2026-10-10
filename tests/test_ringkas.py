@@ -49,17 +49,19 @@ def test_txt_is_compact_and_complete():
                                          {"code": "AA", "net_volume": 2e6, "buy_volume": 3e6, "sell_volume": 1e6, "buy_avg": 99.0, "sell_avg": 100.0}]), ("XL",), 98.0)
     ritel = al_mod.minat_ritel(sid, fw, None, -0.02)
     out = rg.txt_bytes(r, rk, f, "2026-10-11 02:00 WIB", ovn, _aliran(), b200, hkr, None, bd.volume_rata(rk["ind"]), ritel).decode()
-    for h in ("# TEST", "## KEPUTUSAN APP", "## HARGA", "## TEKNIKAL", "## RENCANA APP", "## STATISTIK HISTORIS HARGA",
-              "## GAYA TRADING", "## BANDAR (window)", "## BANDAR 200H", "## VOLUME", "## BPJP/BSJP", "## FUNDAMENTAL", "## CATATAN SUMBER"):
+    for h in ("# TEST", "STATUS_VALIDASI=", "LEGENDA:", "## A. METADATA & KUALITAS DATA", "## B. KESIMPULAN", "### TRADING_SETUP", "### INVESTMENT_THESIS",
+              "## C. TRADING EDGE", "status_edge=BELUM TERBUKTI", "## D. KEPUTUSAN & INVALIDASI", "invalidasi=", "## E. AUDIT TRAIL", "konflik_sinyal=",
+              "## BATASAN DATA & ENDPOINT", "## HARGA", "## TEKNIKAL", "## RENCANA APP", "## STATISTIK HISTORIS HARGA", "## GAYA TRADING",
+              "## BANDAR (window)", "## BANDAR 200H", "## VOLUME", "## BPJP/BSJP", "## FUNDAMENTAL"):
         assert h in out, h
     assert "## MINAT RITEL" in out and "arah=TURUN" in out and "status=RITEL KELUAR / DIKERINGKAN" in out and "SID turun = minat ritel menurun" in out
-    assert "nyangkut=NYANGKUT" in out and "P(naik)" in out and "area_beli=" in out and "UNTUK AI:" in out
-    assert len(out.encode()) < 14_000, len(out.encode())
-    assert out.count("\n") < 140
+    assert "INDIKASI NYANGKUT" in out and "nyangkut=NYANGKUT" not in out and "P(naik)" in out and "n_eff" in out and "area_beli=" in out and "UNTUK AI:" in out
+    assert len(out.encode()) < 24_000, len(out.encode())
     assert all(ord(ch) < 0x2500 for ch in out)               # tanpa emoji/dekorasi
 
 
 def test_txt_minimal_inputs():
     r, _, _ = _inputs()
     out = rg.txt_bytes(r, None, None, "x").decode()
-    assert "## KEPUTUSAN APP" in out and "## STATISTIK" not in out
+    assert "## B. KESIMPULAN" in out and "## STATISTIK" not in out and "tidak dapat dihitung" in out
+    assert "[GAGAL]" not in out and "[STRUKTURAL]" in out

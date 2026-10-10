@@ -15,6 +15,7 @@ import streamlit as st
 
 import adimology as ad
 import aliran as al
+import audit as au
 import bandar as bd
 import fundamental as fd
 import hengky as hk
@@ -414,18 +415,33 @@ def ambil_fundamental(client: ad.InvezgoClient, kode: str, harga: float) -> dict
             return client.get(path, params)
         except Exception:
             return None
-    def laporan(statement):
+
+    def laporan(statement, tipe):
         # Invezgo membalas 422 bila limit > jumlah periode yang tersedia (mis. emiten baru IPO)
-        for limit in (fd.N_KUARTAL, 8, 5, 4, 2, 1):
+        for limit in ((fd.N_KUARTAL, 8, 5, 4, 2, 1) if tipe == "Q" else (4, 3, 2, 1)):
             try:
-                return client.get(f"/analysis/financial-statement/{kode}",
-                                  {"statement": statement, "type": "Q", "limit": limit})
+                return client.get(f"/analysis/financial-statement/{kode}", {"statement": statement, "type": tipe, "limit": limit})
             except ad.ParamDitolak:
                 continue
-        raise ad.AdimologyError(f"Laporan keuangan {kode} ({statement}) belum tersedia di Invezgo.")
-    lap = {s: laporan(s) for s in ("IS", "BS", "CF")}
-    return fd.analisa(opsional(f"/analysis/information/{kode}"), lap["IS"], lap["BS"], lap["CF"],
-                      opsional(f"/analysis/keystat/{kode}", {"type": "Q", "limit": 8}), harga)
+        if tipe == "Q":
+            raise ad.AdimologyError(f"Laporan keuangan {kode} ({statement}) belum tersedia di Invezgo.")
+        return None
+
+    lap = {s: laporan(s, "Q") for s in ("IS", "BS", "CF")}
+    fy = {}
+    for s_ in ("IS", "BS", "CF"):                     # data tahunan: Q4 = FY - YTD Q3
+        try:
+            fy[s_] = laporan(s_, "FY")
+        except Exception:
+            fy[s_] = None
+    f = fd.analisa(opsional(f"/analysis/information/{kode}"), lap["IS"], lap["BS"], lap["CF"],
+                   opsional(f"/analysis/keystat/{kode}", {"type": "Q", "limit": 8}), harga, fy=fy)
+    try:
+        f["aksi"] = au.parse_aksi(client.get("/analysis/calendar", {"code": kode, "page": 1, "limit": 15}))
+        f["aksi_status"] = f"ADA {len(f['aksi'])} EVENT" if f["aksi"] else "TIDAK ADA EVENT"
+    except Exception:
+        f["aksi"], f["aksi_status"] = None, "TIDAK DIUKUR (endpoint gagal)"
+    return f
 
 
 def ambil_aliran(client: ad.InvezgoClient, r: ad.Result) -> dict:
@@ -450,6 +466,9 @@ PETUNJUK = """
   = WASPADA.
 - **Target Adimology adalah skenario**, bukan prediksi: di backtest tidak lebih baik dari beli acak.
 - Keputusan di PDF: BELI hanya bila AKUMULASI KUAT **dan** teknikal di area beli.
+
+**Validasi laporan**: TXT memuat STATUS_VALIDASI (rekonsiliasi angka posisi/RR, kesegaran data, kelengkapan fundamental); bila GAGAL,
+jangan dipakai. Kalkulator posisi memakai SATU fungsi dan stop yang sama dengan SL yang ditampilkan.
 
 **Unduh TXT (untuk AI)**: ringkasan padat (±7–12 KB) seluruh tab + statistik historis harga saham itu (peluang naik,
 sentuh target sebelum stop) untuk ditempel ke Claude/ChatGPT, mis. untuk bertanya peluang naik, cocok hold/swing/scalping,
@@ -684,7 +703,9 @@ if submitted:
                         exp[f"{jenis}_err"] = f"{type(e).__name__}: {e}"
                 try:
                     exp["txt"] = rg.txt_bytes(r0, rk_, f_, waktu, o_, a_, b_, hk_s, st.session_state.get("nilai"), st.session_state.get("vol"),
-                                         st.session_state.get("ritel"))
+                                         st.session_state.get("ritel"),
+                                         status={k_: st.session_state.get(k_) for k_ in ("tek", "fund", "ovn", "aliran", "b200", "hengky")},
+                                         snapshot=now.replace(tzinfo=None))
                 except Exception as e:
                     exp["txt_err"] = f"{type(e).__name__}: {e}"
             st.session_state["export"] = exp
@@ -744,17 +765,25 @@ with tab_main:
                    f"barang bandar {fmt(r.calc['barang'])} lot · lot per papan {fmt(r.lot_per_papan)} ({r.lpp_sumber}) · "
                    f"p = {r.calc['p']:.2f} papan · level pembatal: close di bawah {fmt(r.plan['sl'])}")
         st.subheader("Kalkulator posisi")
-        if r.plan["lot"] > 0:
-            st.dataframe(pd.DataFrame([
-                {"Keterangan": "Ukuran posisi", "Nilai": f"{r.plan['lot']:,} lot"},
-                {"Keterangan": "Modal terpakai", "Nilai": f"Rp{r.plan['modal_pakai']:,.0f}"},
-                {"Keterangan": "Jika kena target realistis", "Nilai": f"Rp{r.plan['laba_target']:+,.0f}"},
-                {"Keterangan": "Jika kena SL", "Nilai": f"Rp{r.plan['rugi_sl']:+,.0f}"}]),
-                hide_index=True, width="content")
-            st.caption(f"Risiko {r.params.risiko_pct:.1%} dari Rp{r.params.modal:,.0f}; fee perkiraan. "
-                       "Untuk SL di bawah harga saja. Ukuran posisi hanya hitungan mekanis, bukan rekomendasi.")
-        else:
-            st.write("Harga tidak di atas SL atau modal tidak cukup, ukuran posisi tidak dihitung.")
+        tek_p = st.session_state.get("tek")
+        rk_pos = tek_p[1] if tek_p and tek_p[0] == "ok" else None
+        skenario = au.skenario_posisi(r, rk_pos) or [dict(nama="Adimology: entry harga sekarang, stop = SL window", **au.hitung_posisi(
+            r.params.modal, r.params.risiko_pct, r.harga, r.plan["sl"], r.calc["t_real_r"], r.params.fee_beli, r.params.fee_jual))]
+        rows = [{"Skenario": x["nama"], "Entry": x["entry"], "Stop": x["stop"], "Lot": x["lot"],
+                 "Modal terpakai (Rp)": x.get("modal_pakai"), "Rugi di stop (Rp, incl. fee)": x.get("rugi_stop"),
+                 "% modal": x.get("rugi_stop_pct_modal"), "Laba di target (Rp)": x.get("laba_target"), "R/R bersih": x.get("rr_bersih"),
+                 "Rugi jika gap -5% (Rp)": x.get("rugi_gap")} for x in skenario]
+        st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch", column_config={
+            "Entry": st.column_config.NumberColumn(format="%,.0f"), "Stop": st.column_config.NumberColumn(format="%,.0f"),
+            "Modal terpakai (Rp)": st.column_config.NumberColumn(format="%,.0f"), "Rugi di stop (Rp, incl. fee)": st.column_config.NumberColumn(format="%,.0f"),
+            "% modal": st.column_config.NumberColumn(format="percent"), "Laba di target (Rp)": st.column_config.NumberColumn(format="%,.0f"),
+            "R/R bersih": st.column_config.NumberColumn(format="%.2f"), "Rugi jika gap -5% (Rp)": st.column_config.NumberColumn(format="%,.0f")})
+        v_pos = au.validasi(r, rk_pos, None, skenario)
+        gagal_pos = [c["detail"] for c in v_pos["cek"] if c["status"] == "GAGAL"]
+        if gagal_pos:
+            st.error("Validasi angka GAGAL, jangan dipakai: " + " | ".join(gagal_pos))
+        st.caption(f"Risiko {r.params.risiko_pct:.1%} dari Rp{r.params.modal:,.0f}. Stop yang dipakai SAMA dengan SL yang ditampilkan. "
+                   f"Rumus: {au.RUMUS_POSISI}. Hitungan mekanis, bukan rekomendasi.")
 
 
 def baris_rencana(rk: dict) -> list[dict]:

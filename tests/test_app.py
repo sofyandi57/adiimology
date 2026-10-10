@@ -60,8 +60,8 @@ def test_app_runs_and_computes(monkeypatch, tmp_path):
     assert "Target realistis" in labels and "Target max" in labels
     vals = {m.label: m.value for m in at.metric}
     assert vals["Target realistis"] == "292" and vals["Target max"] == "296"
-    pos = [d.value for d in at.dataframe if "Keterangan" in d.value.columns]
-    assert pos and pos[0]["Keterangan"].tolist() == ["Ukuran posisi", "Modal terpakai", "Jika kena target realistis", "Jika kena SL"]
+    pos = [d.value for d in at.dataframe if "Rugi di stop (Rp, incl. fee)" in d.value.columns]
+    assert pos and len(pos[0]) >= 1 and (pos[0]["Rugi di stop (Rp, incl. fee)"].fillna(0) <= 100_000 + 1).all()   # <= anggaran risiko 1% dari 10 jt
     assert "histori" not in at.session_state  # tersimpan ke DB, bukan ke sesi
     # tab Rekomendasi terisi (data tiruan hanya 5 hari -> TIDAK TERUKUR, tapi tetap tampil tanpa error)
     tek = at.session_state["tek"]
@@ -104,7 +104,9 @@ def test_app_runs_and_computes(monkeypatch, tmp_path):
     assert konf.set_index("Konfirmasi").loc["Afiliasi pemegang saham ≥5%", "Status"] == "TERAFILIASI"
     exp = at.session_state["export"]
     assert exp["pdf"][:4] == b"%PDF" and exp["xlsx"][:2] == b"PK" and exp["nama"].startswith("riset_MCAS_")
-    assert exp["txt"].startswith(b"# MCAS") and len(exp["txt"]) < 16_000 and b"## KEPUTUSAN APP" in exp["txt"]
+    assert exp["txt"].startswith(b"# MCAS") and len(exp["txt"]) < 24_000 and b"## B. KESIMPULAN" in exp["txt"]
+    assert b"STATUS_VALIDASI=" in exp["txt"] and b"## BATASAN DATA & ENDPOINT" in exp["txt"] and b"[GAGAL] bandar jangka panjang" in exp["txt"]
+    assert b"aksi_korporasi=" in exp["txt"] and b"INVESTMENT_THESIS" in exp["txt"]
     # tombol Petunjuk membuka dialog tanpa error
     [b for b in at.button if b.label == "ℹ️ Petunjuk"][0].click().run()
     assert not at.exception, [e.value for e in at.exception]
