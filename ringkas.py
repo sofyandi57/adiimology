@@ -5,6 +5,8 @@ lot = 100 lembar, 'M' = Rp miliar. Edukasi, bukan ajakan transaksi.
 """
 from __future__ import annotations
 
+import re
+
 import numpy as np
 import pandas as pd
 
@@ -361,7 +363,8 @@ def _bandar_lines(din: dict | None) -> list[str]:
         return L
     L.append(f"[OBS] kelompok_tetap(top-3 akumulator non-ritel, 60h)={','.join(f'{k}({din['nama'].get(k, k)[:18]})' for k in din['grup'])} "
              f"distributor={','.join(din['grup_dist']) or '-'}; denominator=volume total tiap jendela; n_hari={din['n_hari']}")
-    L.append("dimensi|bobot|skor|mendukung|menentang  (bobot=usulan desain; BUKAN probabilitas)")
+    L.append("bobot dimensi = usulan desain; BUKAN probabilitas keberhasilan; skor 0-100")
+    L.append("dimensi|bobot|skor|mendukung|menentang")
     for x in din["dimensi"]:
         L.append(f"{x['dimensi']}|{x['bobot']:.0%}|{x['skor']:.0f}|{'; '.join(x['mendukung'])[:230] or '-'}|{'; '.join(x['menentang'])[:230] or '-'}")
     L.append("jendela_h|net_lot|net_Rp~(lot*close)|%vol|hari_net_beli|ret_harga|ret_per_1%vol")
@@ -552,7 +555,8 @@ def _keputusan_lines(r, rk, nilai, hk_, kep, alasan, pos, ovn) -> list[str]:
     ubah = [x["kriteria"] for x in nilai["kriteria"] if x["status"] in ("tidak", "netral")] +            ([x["kriteria"] for x in hk_["checklist"]["kriteria"] if x["status"] in ("tidak", "netral") and x["inti"]] if hk_ else [])
     L.append("rekomendasi_berubah_jika=" + ("; ".join(f"'{u}' menjadi ya" for u in ubah[:7]) or "tidak ada syarat tersisa") + " (dan tidak ada jebakan)")
     if pos:
-        L.append("posisi (modal & risiko dari parameter app; STOP = SL teknikal di atas; fee termasuk): skenario|entry|stop|lot|modal_pakai|rugi_di_stop|%modal|laba_di_target|RR_bersih|rugi_jika_gap5%")
+        L.append("posisi: modal & risiko dari parameter app; STOP = SL teknikal di atas; fee termasuk")
+        L.append("skenario|entry|stop|lot|modal_pakai|rugi_di_stop|%modal|laba_di_target|RR_bersih|rugi_jika_gap5%")
         for x in pos:
             if x.get("lot"):
                 L.append(f"{x['nama']}|{_i(x['entry'])}|{_i(x['stop'])}|{x['lot']}|Rp{x['modal_pakai']:,.0f}|Rp{x['rugi_stop']:,.0f}|{x['rugi_stop_pct_modal']:.2%}|Rp{x['laba_target']:,.0f}|{_f(x['rr_bersih'], 2)}|Rp{x['rugi_gap']:,.0f} (pengikat lot: {x['pengikat']})")
@@ -586,8 +590,8 @@ def _audit_lines(r, rk, f, nilai, hk_, kep, alasan, ritel, b200) -> list[str]:
     return L
 
 
-def txt_bytes(r, rk, f, waktu: str, ovn=None, alr=None, b200=None, hk_=None, nilai=None, vol=None, ritel=None,
-              status=None, snapshot=None) -> bytes:
+def _baris(r, rk, f, waktu: str, ovn=None, alr=None, b200=None, hk_=None, nilai=None, vol=None, ritel=None,
+           status=None, snapshot=None) -> list[str]:
     snapshot = snapshot or dt.datetime.now()
     nilai = nilai or bd.penilaian(r, alr, rk)
     kep, alasan = lp.keputusan(r, rk, f, alr, nilai, hk_)
@@ -613,4 +617,52 @@ def txt_bytes(r, rk, f, waktu: str, ovn=None, alr=None, b200=None, hk_=None, nil
     L += _audit_lines(r, rk, f, nilai, hk_, kep, alasan, ritel, b200)
     L.append("## BATASAN DATA & ENDPOINT")
     L += au.batasan(status or {}, r, rk, f, ovn, alr, b200, hk_, ritel)
-    return ("\n".join(L) + "\n").encode("utf-8")
+    return L
+
+
+
+def txt_bytes(*a, **k) -> bytes:
+    return ("\n".join(_baris(*a, **k)) + "\n").encode("utf-8")
+
+
+# ------------------------------------------------------------------- Markdown
+def _md_dari_baris(L: list[str]) -> list[str]:
+    """Ubah baris laporan menjadi Markdown terstruktur: heading, tabel (blok baris '|' berkolom sama), daftar, kutipan."""
+    out: list[str] = []
+    i = 0
+    while i < len(L):
+        ln = L[i].rstrip()
+        if i == 0 and ln.startswith("# "):
+            out += [ln.replace(" | ", " — "), ""]
+        elif ln.startswith("# ====="):
+            out += ["", "---", "", "> " + ln.strip("# =").strip(), ""]
+        elif ln.startswith("### "):
+            out += ["", ln, ""]
+        elif ln.startswith("## "):
+            out += ["", ln, ""]
+        elif re.fullmatch(r"\[[A-Za-z0-9 ]+\]", ln):
+            out += ["", "#### " + ln.strip("[]"), ""]
+        elif ln.startswith(("LEGENDA:", "UNTUK AI:", "sumber:")):
+            out += ["> " + ln, ""]
+        elif ln.startswith("STATUS_VALIDASI="):
+            out += ["**" + ln + "**", ""]
+        else:
+            cells = ln.split("|")
+            if len(cells) >= 3 and all("=" not in c for c in cells) and i + 1 < len(L) and L[i + 1].count("|") == ln.count("|"):
+                j = i + 1
+                rows = []
+                while j < len(L) and L[j].count("|") == ln.count("|"):
+                    rows.append([c.strip() for c in L[j].split("|")])
+                    j += 1
+                out += ["", "| " + " | ".join(c.strip() for c in cells) + " |", "|" + "---|" * len(cells)]
+                out += ["| " + " | ".join(r_) + " |" for r_ in rows] + [""]
+                i = j
+                continue
+            out.append("- " + ln.strip() if ln.strip() else "")
+        i += 1
+    return out
+
+
+def md_bytes(*a, **k) -> bytes:
+    md = _md_dari_baris(_baris(*a, **k))
+    return ("\n".join(md) + "\n").replace("\n\n\n", "\n\n").encode("utf-8")

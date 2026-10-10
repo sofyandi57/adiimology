@@ -65,3 +65,33 @@ def test_txt_minimal_inputs():
     out = rg.txt_bytes(r, None, None, "x").decode()
     assert "## B. KESIMPULAN" in out and "## STATISTIK" not in out and "tidak dapat dihitung" in out
     assert "[GAGAL]" not in out and "[STRUKTURAL]" in out
+
+
+def test_markdown_has_headings_tables_and_valid_table_shape():
+    import re
+    r, rk, f = _inputs()
+    ovn = idt.statistik(idt.get_bars(C(bars(61)), "TEST", None))
+    hkr = hk.analisa(None, r, rk, bd.penilaian(r, _aliran(), rk), 0.0)
+    md = rg.md_bytes(r, rk, f, "2026-10-11 02:00 WIB", ovn, _aliran(), None, hkr, None, bd.volume_rata(rk["ind"])).decode()
+    assert md.startswith("# TEST — ") and "**STATUS_VALIDASI=" in md
+    for h in ("## A. METADATA & KUALITAS DATA", "## B. KESIMPULAN", "### TRADING_SETUP", "### INVESTMENT_THESIS", "## D. KEPUTUSAN & INVALIDASI",
+              "## E. AUDIT TRAIL", "## BATASAN DATA & ENDPOINT", "#### PnL"):
+        assert h in md, h
+    assert "> UNTUK AI:" in md and "\n- " in md
+    # setiap tabel: header, pemisah, dan semua baris berkolom sama
+    lines = md.splitlines()
+    n_tabel = 0
+    for i, ln in enumerate(lines):
+        if re.fullmatch(r"\|(---\|)+", ln):
+            n_tabel += 1
+            ncol = ln.count("|") - 1
+            assert lines[i - 1].count("|") - 1 == ncol and lines[i - 1].startswith("| ")
+            j = i + 1
+            while j < len(lines) and lines[j].startswith("| "):
+                assert lines[j].count("|") - 1 == ncol, lines[j]
+                j += 1
+    assert n_tabel >= 5
+    # tabel dimensi: header benar (bukan baris data)
+    din_md = rg.md_bytes(r, rk, f, "x", None, None, None, None, None, None).decode()
+    assert "## BANDARMOLOGI" in din_md
+    assert len(md.encode()) < 40_000

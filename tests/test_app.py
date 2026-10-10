@@ -108,6 +108,7 @@ def test_app_runs_and_computes(monkeypatch, tmp_path):
     assert konf.set_index("Konfirmasi").loc["Afiliasi pemegang saham ≥5%", "Status"] == "TERAFILIASI"
     exp = at.session_state["export"]
     assert exp["pdf"][:4] == b"%PDF" and exp["xlsx"][:2] == b"PK" and exp["nama"].startswith("riset_MCAS_")
+    assert exp["md"].startswith(b"# MCAS \xe2\x80\x94") and b"## B. KESIMPULAN" in exp["md"] and b"|---|" in exp["md"] and "md_err" not in exp
     assert exp["txt"].startswith(b"# MCAS") and len(exp["txt"]) < 24_000 and b"## B. KESIMPULAN" in exp["txt"]
     assert b"STATUS_VALIDASI=" in exp["txt"] and b"## BATASAN DATA & ENDPOINT" in exp["txt"] and b"[GAGAL] bandar jangka panjang" in exp["txt"]
     assert b"aksi_korporasi=" in exp["txt"] and b"INVESTMENT_THESIS" in exp["txt"]

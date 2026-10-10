@@ -531,6 +531,9 @@ konklusif, dengan bukti mendukung, menentang, keyakinan, dan kondisi pembatalan.
 **Validasi laporan**: TXT memuat STATUS_VALIDASI (rekonsiliasi angka posisi/RR, kesegaran data, kelengkapan fundamental); bila GAGAL,
 jangan dipakai. Kalkulator posisi memakai SATU fungsi dan stop yang sama dengan SL yang ditampilkan.
 
+**Unduh Markdown (untuk AI)**: isi sama dengan TXT tetapi terstruktur (heading, tabel, daftar); format yang paling nyaman dibaca AI dan
+manusia, cocok ditempel ke Claude/ChatGPT atau diunggah sebagai file.
+
 **Unduh TXT (untuk AI)**: ringkasan padat (±7–12 KB) seluruh tab + statistik historis harga saham itu (peluang naik,
 sentuh target sebelum stop) untuk ditempel ke Claude/ChatGPT, mis. untuk bertanya peluang naik, cocok hold/swing/scalping,
 dan harga masuk.
@@ -772,13 +775,14 @@ if submitted:
                         exp[jenis] = fn(r0, rk_, f_, waktu, o_, a_, b_, hk_s, st.session_state.get("ritel"), (st.session_state.get("nilai") or {}).get("dinamis"))
                     except Exception as e:  # ekspor gagal tidak boleh mematikan kalkulator
                         exp[f"{jenis}_err"] = f"{type(e).__name__}: {e}"
-                try:
-                    exp["txt"] = rg.txt_bytes(r0, rk_, f_, waktu, o_, a_, b_, hk_s, st.session_state.get("nilai"), st.session_state.get("vol"),
-                                         st.session_state.get("ritel"),
-                                         status={k_: st.session_state.get(k_) for k_ in ("tek", "fund", "ovn", "aliran", "b200", "hengky", "dinamis")},
-                                         snapshot=now.replace(tzinfo=None))
-                except Exception as e:
-                    exp["txt_err"] = f"{type(e).__name__}: {e}"
+                for jenis_, fn_ in (("txt", rg.txt_bytes), ("md", rg.md_bytes)):
+                    try:
+                        exp[jenis_] = fn_(r0, rk_, f_, waktu, o_, a_, b_, hk_s, st.session_state.get("nilai"), st.session_state.get("vol"),
+                                          st.session_state.get("ritel"),
+                                          status={k_: st.session_state.get(k_) for k_ in ("tek", "fund", "ovn", "aliran", "b200", "hengky", "dinamis")},
+                                          snapshot=now.replace(tzinfo=None))
+                    except Exception as e:
+                        exp[f"{jenis_}_err"] = f"{type(e).__name__}: {e}"
             st.session_state["export"] = exp
 
 exp = st.session_state.get("export")
@@ -792,7 +796,10 @@ if exp:
     if "txt" in exp:
         st.sidebar.download_button("🧾 Unduh TXT (untuk AI)", exp["txt"], f"{exp['nama']}.txt", mime="text/plain", width="stretch",
                                    help=f"Ringkasan padat ({len(exp['txt']) / 1024:.1f} KB) untuk ditempel ke Claude/ChatGPT.")
-    for jenis in ("xlsx", "pdf", "txt"):
+    if "md" in exp:
+        st.sidebar.download_button("📝 Unduh Markdown (untuk AI)", exp["md"], f"{exp['nama']}.md", mime="text/markdown", width="stretch",
+                                   help=f"Struktur sama dengan TXT tetapi berupa heading, tabel, dan daftar ({len(exp['md']) / 1024:.1f} KB).")
+    for jenis in ("xlsx", "pdf", "txt", "md"):
         if f"{jenis}_err" in exp:
             st.sidebar.error(f"Gagal membuat {jenis.upper()}: {exp[f'{jenis}_err']}")
 
