@@ -58,6 +58,8 @@ def test_app_runs_and_computes(monkeypatch, tmp_path):
     assert "Target realistis" in labels and "Target max" in labels
     vals = {m.label: m.value for m in at.metric}
     assert vals["Target realistis"] == "292" and vals["Target max"] == "296"
+    pos = [d.value for d in at.dataframe if "Keterangan" in d.value.columns]
+    assert pos and pos[0]["Keterangan"].tolist() == ["Ukuran posisi", "Modal terpakai", "Jika kena target realistis", "Jika kena SL"]
     assert "histori" not in at.session_state  # tersimpan ke DB, bukan ke sesi
     # tab Rekomendasi terisi (data tiruan hanya 5 hari -> TIDAK TERUKUR, tapi tetap tampil tanpa error)
     tek = at.session_state["tek"]

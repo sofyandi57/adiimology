@@ -387,11 +387,12 @@ with tab_main:
                    f"p = {r.calc['p']:.2f} papan · level pembatal: close di bawah {fmt(r.plan['sl'])}")
         st.subheader("Kalkulator posisi")
         if r.plan["lot"] > 0:
-            k = st.columns(4)
-            k[0].metric("Ukuran posisi", f"{r.plan['lot']:,} lot")
-            k[1].metric("Modal terpakai", f"Rp{r.plan['modal_pakai']:,.0f}")
-            k[2].metric("Jika kena target realistis", f"Rp{r.plan['laba_target']:+,.0f}")
-            k[3].metric("Jika kena SL", f"Rp{r.plan['rugi_sl']:+,.0f}")
+            st.dataframe(pd.DataFrame([
+                {"Keterangan": "Ukuran posisi", "Nilai": f"{r.plan['lot']:,} lot"},
+                {"Keterangan": "Modal terpakai", "Nilai": f"Rp{r.plan['modal_pakai']:,.0f}"},
+                {"Keterangan": "Jika kena target realistis", "Nilai": f"Rp{r.plan['laba_target']:+,.0f}"},
+                {"Keterangan": "Jika kena SL", "Nilai": f"Rp{r.plan['rugi_sl']:+,.0f}"}]),
+                hide_index=True, width="content")
             st.caption(f"Risiko {r.params.risiko_pct:.1%} dari Rp{r.params.modal:,.0f}; fee perkiraan. "
                        "Untuk SL di bawah harga saja. Ukuran posisi hanya hitungan mekanis, bukan rekomendasi.")
         else:
