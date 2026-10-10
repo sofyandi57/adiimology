@@ -15,11 +15,17 @@ python backtest/run_backtest.py --yes   # 2) jalankan
   sama **tidak memakai kuota**; `--offline` membaca cache saja tanpa key.
 - `--max-calls N` membatasi panggilan baru per run. Bila tercapai, skrip berhenti (exit 4) dan cache tetap tersimpan,
   jadi bisa dicicil per hari: jalankan ulang dan skrip melanjutkan dari cache.
-- Estimasi default (40 saham, 2024-06-01..hari ini, window 5): sekitar **11 ribu panggilan**, sebagian besar broker summary
-  (window + hari terakhir per Jumat per saham). Mulai kecil dulu, mis.
-  `--tickers BBRI,ANTM,MDKA,ESSA --start 2025-06-01 --yes`.
-- Opsi lain: `--windows 5,10,20` (setiap window menambah 1 panggilan per Jumat per saham), `--horizons 5,10,20`,
-  `--exclude AB,CD` (broker ritel tambahan; default XL, YP, XC, PD), `--ob-time 15:30`, `--proxy-scale`, `--seed`.
+- Estimasi default (40 saham, 2024-06-01..hari ini, window 5, kedua studi): sekitar **16 ribu panggilan**
+  (backtest target ~10.000: broker summary window + hari terakhir per Jumat per saham; studi imbalance ~5.700:
+  satu snapshot orderbook per hari bursa per saham sejak 2026-03-25). Mulai kecil dulu, mis.
+  `--tickers BBRI,ANTM,MDKA,ESSA --start 2025-06-01 --yes`, atau satu studi saja dengan `--study target` /
+  `--study imbalance`.
+- Opsi lain: `--windows 5,10,20` (setiap window menambah 1 panggilan per Jumat per saham),
+  `--modes top1,top3` (top3 = gabungan 3 akumulator dengan avg beli tertimbang volume, sama dengan
+  `mode_bandar="top3"` di app; **tanpa panggilan tambahan**), `--horizons 5,10,20`,
+  `--exclude AB,CD` (broker ritel tambahan; default XL, YP, XC, PD), `--ob-time 14:30`, `--imb-time 14:30`,
+  `--proxy-scale`, `--seed`. Bila `--ob-time` sama dengan `--imb-time`, snapshot Jumat dipakai bersama lewat cache.
+- Mode `ob_multi` app (median 3 snapshot) belum diuji di backtest; backtest memakai satu snapshot.
 
 ## Aturan backtest
 - **Tanggal evaluasi t**: hari bursa terakhir tiap minggu (Jumat, atau hari sebelumnya bila libur). Hanya data ≤ t.
@@ -27,7 +33,7 @@ python backtest/run_backtest.py --yes   # 2) jalankan
   bandar di hari terakhir negatif dan ≥ 25% net window (sama dengan app).
 - **Sinyal Adimology** = verdict "SETUP TERPENUHI" di app: akumulasi, tidak distribusi, harga < target realistis,
   upside ≥ 3%, harga ≤ avg bandar + 5%.
-- **Lot per papan**: mulai 2026-03-25 dari orderbook historis Invezgo (snapshot `--ob-time` pada tanggal t). Sebelumnya
+- **Lot per papan**: mulai 2026-03-25 dari orderbook historis Invezgo (snapshot `--ob-time`, default 14:30, pada tanggal t). Sebelumnya
   memakai **proksi** = rata-rata lot transaksi per hari di window (dari broker summary) / median jumlah papan rentang
   harian (low→high, minimal 1). Hasil dilaporkan terpisah per regime (`proxy`, `orderbook`). Diagnostik
   `rasio_lpp_orderbook_per_proxy_median` menunjukkan seberapa jauh proksi dari orderbook; bila jauh dari 1, coba
@@ -64,3 +70,16 @@ File di `backtest/results/` (di-gitignore):
 Pegangan: lihat dulu `n` dan `n_tanggal` (di bawah ~30 tanggal, CI lebar dan kesimpulan rapuh). Regime `orderbook`
 adalah uji rumus yang paling setia, tetapi datanya baru sejak Maret 2026. Hasil `proxy` menguji ide yang sama dengan
 lot per papan pengganti, jadi bukan bukti langsung untuk angka orderbook.
+
+## Studi B: imbalance orderbook (klaim slide 12)
+Klaim: "total offer lebih tebal dari total bid -> cenderung naik; bid lebih tebal -> sideways/koreksi".
+Untuk tiap saham dan tiap hari bursa sejak 2026-03-25: snapshot orderbook `--imb-time` (14:30),
+rasio = total lot offer / total lot bid (level yang terlihat di snapshot), lalu return close hari itu ke close
+1 dan 5 hari bursa berikutnya (tanpa fee; snapshot sebelum close jadi tidak ada look-ahead).
+
+File: `imbalance_*.csv` (per saham-hari), `imbalance_ringkasan_*.csv` (per bucket rasio: <0,67, 0,67-1, 1-1,5, >=1,5,
+plus baseline **semua hari**: rata-rata return dan CI, median, `pct_naik`), `imbalance_perbandingan_*.csv`
+(tiap bucket vs semua hari, dan **offer >= bid vs bid > offer**, untuk rata-rata return dan % hari naik).
+CI 95% bootstrap klaster per **minggu** (return 5 hari antar hari berurutan saling tumpang tindih, dan semua saham
+bergerak bersama IHSG). Klaim didukung bila `offer >= bid` vs `bid > offer` berkesimpulan "kelompok LEBIH TINGGI".
+Catatan: data hanya ~6 bulan, sebagian besar dalam satu kondisi pasar; snapshot bisa berisi antrean palsu (spoof).

@@ -7,10 +7,70 @@ import pytest
 
 import adimology as ad
 from backtest import run_backtest as bt
-from fakes import BacktestFake, mcas, setup_case
+from fakes import mcas, setup_case
+
+
+def _row(code, net, avg, name="X", buy_volume=None):
+    return dict(code=code, buy_freq="1", buy_volume=str(buy_volume if buy_volume is not None else abs(net) * 2 + 1000),
+                buy_value="1", sell_freq="1", sell_volume="1", sell_value="1", buy_avg=str(avg), sell_avg="290",
+                net_value="1", net_volume=str(net), net_freq="1", name=name)
+
+
+class BacktestFake(ad.InvezgoClient):
+    """Data sintetis multi-bulan (melintasi OB_START 2026-03-25 agar kedua regime ada).
+
+    AAAA ~100 (fraksi 1), BBBB ~650 (fraksi 5). Akumulator: CC (terbesar) dan AK; XL ritel; YU penjual.
+    Rasio offer/bid orderbook berputar 0,4..1,6 per hari. Semua request dicatat di self.calls.
+    """
+
+    def __init__(self, start="2025-11-03", end="2026-06-30"):
+        super().__init__("x")
+        import math
+        self.calls, self.days, d = [], [], dt.date.fromisoformat(start)
+        while d <= dt.date.fromisoformat(end):
+            if d.weekday() < 5:
+                self.days.append(d)
+            d += dt.timedelta(days=1)
+        self.pos = {x.isoformat(): k for k, x in enumerate(self.days)}
+        self.bars = {}
+        for kode, base, amp, per, fr in (("AAAA", 110, 25, 9, 1), ("BBBB", 650, 90, 7, 5)):
+            rows, prev = {}, base
+            for k, d in enumerate(self.days):
+                c = round((base + amp * math.sin(k / per) + 0.05 * k) / fr) * fr
+                o = prev
+                rows[d.isoformat()] = (o, max(o, c) + 2 * fr, min(o, c) - 2 * fr, c, 1_000_000 + 10_000 * (k % 7))
+                prev = c
+            self.bars[kode] = rows
+
+    def get(self, path, params=None):
+        import math
+        self.calls.append((path, dict(params or {})))
+        bars = self.bars.get(path.rstrip("/").split("/")[-1])
+        if bars is None:
+            raise ad.AdimologyError("Data tidak ditemukan (fake).")
+        if "/chart/stock/" in path:
+            return [dict(date=d + "T00:00:00.000Z", open=o, high=h, low=l, close=c, volume=str(v))
+                    for d, (o, h, l, c, v) in bars.items() if params["from"] <= d <= params["to"]]
+        if "/summary/stock/" in path:
+            f, t = params["from"], params["to"]
+            sel = [b for d, b in bars.items() if f <= d <= t]
+            vol, avg = sum(b[4] for b in sel), sum(b[3] for b in sel) / len(sel) * 0.99
+            if f == t:                                   # harian: CC distribusi tiap hari ke-4
+                net = -400_000 if self.pos[f] % 4 == 0 else 20_000
+                return [_row("CC", net, avg, "MANDIRI", vol), _row("AK", 5_000, avg * 1.01, "UBS")]
+            net = 300_000 if math.sin(self.pos[f] / 5) > -0.3 else -200_000
+            return [_row("CC", net, avg, "MANDIRI", vol // 3), _row("AK", 100_000, avg * 1.02, "UBS", vol // 6),
+                    _row("XL", 900_000, avg * 1.03, "STOCKBIT", vol // 3), _row("YU", -50_000, avg, "CGS")]
+        if "/order-book/" in path:
+            d = params.get("date") or max(bars)          # tanpa tanggal: snapshot "sekarang"
+            c = bars[d][3]
+            fr, offer = ad.fraksi(c), round(1500 * (0.4 + 0.3 * (self.pos[d] % 5)))
+            return {"bid": [{f"bid{j}price": c - j * fr, f"bid{j}lot": 1500} for j in range(1, 6)],
+                    "offer": [{f"offer{j}price": c + j * fr, f"offer{j}lot": offer} for j in range(1, 6)]}
+        raise AssertionError(path)
 
 ARGS = ["--tickers", "AAAA,BBBB", "--start", "2026-01-05", "--end", "2026-06-30",
-        "--windows", "5,10", "--horizons", "5,10", "--n-boot", "200"]
+        "--windows", "5,10", "--modes", "top1,top3", "--horizons", "5,10", "--n-boot", "200"]
 
 
 def _cfg(tmp_path, **kw):
@@ -94,7 +154,7 @@ def test_end_to_end_and_cache(tmp_path, capsys):
     fake = BacktestFake()
     assert bt.main(_args(tmp_path, "--yes"), client=fake) == 0
     out = capsys.readouterr().out
-    assert "Ringkasan" in out and "Adimology vs baseline" in out
+    assert "A. Backtest target Adimology" in out and "Adimology vs baseline" in out
     sig = pd.read_csv(next((tmp_path / "res").glob("sinyal_*.csv")))
     summ = pd.read_csv(next((tmp_path / "res").glob("ringkasan_*.csv")))
     comp = pd.read_csv(next((tmp_path / "res").glob("perbandingan_*.csv")))
@@ -102,8 +162,14 @@ def test_end_to_end_and_cache(tmp_path, capsys):
     assert {"proxy", "orderbook"} <= set(sig["regime"])
     assert set(sig.loc[sig["strategi"] == "adimology", "lpp_sumber"]) >= {"proxy", "orderbook"}
     assert set(summ["window"]) == {5, 10} and set(summ["H"]) == {5, 10}
+    assert set(summ["mode_bandar"]) == {"top1", "top3"}
     assert set(comp["baseline"]) == {"akumulasi", "target_tetap", "acak"}
-    assert sig.loc[sig["strategi"] == "adimology", "bandar"].eq("CC").all()     # XL (ritel) dikecualikan
+    a = sig[sig["strategi"] == "adimology"]
+    assert set(a.loc[a["mode_bandar"] == "top1", "bandar"]) == {"CC", "AK"}    # XL (ritel) tidak pernah terpilih
+    assert set(a.loc[a["mode_bandar"] == "top3", "bandar"]) <= {"CC+AK", "AK"}
+    assert "B. Studi imbalance" in out
+    isumm = pd.read_csv(next((tmp_path / "res").glob("imbalance_ringkasan_*.csv")))
+    assert "semua hari (baseline)" in set(isumm["bucket"]) and set(isumm["H"]) == {1, 5}
 
     n_live = len(fake.calls)
     est = bt.estimate_calls(bt.parse_args(_args(tmp_path))[0])
@@ -200,3 +266,44 @@ def test_split_signals_excluded_from_summary(tmp_path):
     df = bt.run(bt.CachingClient(fake, tmp_path / "c"), cfg, log=lambda *_: None)
     flagged = df[df["split_dalam_rentang"].astype(bool)]
     assert len(flagged) and (flagged["t"] <= dt.date(2026, 2, 2)).all()
+
+
+def test_top3_matches_ad_analyze(tmp_path):
+    fake, t = BacktestFake(), dt.date(2026, 2, 13)
+    r = ad.analyze(fake, ad.Params(kode="AAAA", tanggal_akhir=t, mode_bandar="top3", lot_per_papan_override=2000,
+                                   broker_dikecualikan=bt.RETAIL_DEFAULT))
+    chart = bt.load_chart(fake, "AAAA", _cfg(tmp_path))
+    i = int(chart.index[chart["tgl"] == t][0])
+    s = bt.signal_at(fake, "AAAA", chart, i, 5, _cfg(tmp_path), "top3")
+    assert s["bandar"] == r.bandar["code"] == "CC+AK"
+    assert s["avg"] == pytest.approx(r.bandar["avg"]) and s["barang_lot"] == pytest.approx(r.bandar["net_lot"])
+    assert s["net_terakhir_lot"] == pytest.approx(r.net_terakhir) and s["distribusi"] == r.distribusi
+
+
+def test_imbalance_rows_and_summary(tmp_path):
+    fake, cfg = BacktestFake(), _cfg(tmp_path)
+    chart = bt.load_chart(fake, "AAAA", cfg)
+    rows = pd.DataFrame(bt.imbalance_rows(fake, "AAAA", chart, cfg))
+    assert rows["t"].min() >= bt.OB_START
+    assert all(p.get("time") == "14:30" for path, p in fake.calls if "order-book" in path)
+    r0 = rows.iloc[0]
+    k = fake.pos[r0["t"].isoformat()]
+    assert r0["rasio_offer_bid"] == pytest.approx(round(1500 * (0.4 + 0.3 * (k % 5))) / 1500)
+    i = int(chart.index[chart["tgl"] == r0["t"]][0])
+    assert r0["ret_1"] == pytest.approx(chart["close"].iloc[i + 1] / chart["close"].iloc[i] - 1)
+    assert rows["ret_5"].iloc[-1] != rows["ret_5"].iloc[-1]          # NaN di ujung data
+    summ, comp = bt.summarize_imbalance(rows, cfg)
+    assert set(summ["bucket"]) == {"semua hari (baseline)"} | {lbl for *_, lbl in bt.IMB_BUCKETS}
+    base = summ[(summ["H"] == 1) & (summ["bucket"] == "semua hari (baseline)")].iloc[0]
+    assert base["n"] == rows["ret_1"].notna().sum()
+    assert {"offer >= bid"} <= set(comp["kelompok"]) and set(comp["metrik"]) == {"rata_return", "pct_naik"}
+
+
+def test_imbalance_only_study_uses_chart_and_orderbook_only(tmp_path):
+    fake = BacktestFake()
+    assert bt.main(_args(tmp_path, "--study", "imbalance", "--yes"), client=fake) == 0
+    paths = {p.split("/")[2] for p, _ in fake.calls}
+    assert paths == {"chart", "order-book"}
+    est = bt.estimate_calls(bt.parse_args(_args(tmp_path, "--study", "imbalance"))[0])
+    assert est["window_summary"] == 0 and len(fake.calls) <= est["total"]
+    assert not list((tmp_path / "res").glob("sinyal_*.csv")) and list((tmp_path / "res").glob("imbalance_*.csv"))
