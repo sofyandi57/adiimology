@@ -11,9 +11,9 @@ Target harga metode Adimology dari data **broker summary + orderbook Invezgo**. 
 - `ringkas.py`: tombol Unduh TXT: ringkasan padat (±7-12 KB) untuk dianalisa AI, termasuk statistik historis harga (peluang naik, sentuh target sebelum stop)
 - `hengky.py`: aturan disiplin trading dari materi Ko Hengky (Remora): checklist uptrend/likuid/level, harga-volume, bid-offer, rencana support/breakout (stop 1 tick), SID, pra-open
 - `bandar.py`: penilaian bandarmologi berbasis bukti (7 kriteria + deteksi jebakan); target Adimology diperlakukan sebagai skenario karena backtest tidak menunjukkan edge
-- `aliran.py`: konfirmasi aliran: asing, pasar nego, konsistensi bandar 1/3/7/20 hari, afiliasi broker dengan pemegang saham >= 5%
+- `aliran.py`: konfirmasi aliran: asing, pasar nego, konsistensi bandar 1/3/7/20 hari, afiliasi broker dengan pemegang saham >= 5%, minat ritel (SID + aliran broker ritel XL/XC/PD/CC/YP)
 - `teknikal.py`: analisa teknikal tab Rekomendasi (support/resistance, MA 5/20/50/100/200, RSI, MACD, ATR, bandar value)
-- `tests/`: 77 tes (ringkasan TXT, Hengky, bandar jangka panjang, penilaian bandar, backtest, login, aliran, teknikal, BPJP/BSJP, fundamental, ekspor, rumus, fraksi bertingkat, kasus MCAS sama dengan output Colab, UI smoke test)
+- `tests/`: 81 tes (minat ritel, ringkasan TXT, Hengky, bandar jangka panjang, penilaian bandar, backtest, login, aliran, teknikal, BPJP/BSJP, fundamental, ekspor, rumus, fraksi bertingkat, kasus MCAS sama dengan output Colab, UI smoke test)
 
 ## Jalankan lokal
 ```bash

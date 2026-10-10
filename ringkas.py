@@ -146,7 +146,7 @@ def _tabel(df: pd.DataFrame, n_kol: int = 6) -> list[str]:
     return out
 
 
-def txt_bytes(r, rk, f, waktu: str, ovn=None, alr=None, b200=None, hk_=None, nilai=None, vol=None) -> bytes:
+def txt_bytes(r, rk, f, waktu: str, ovn=None, alr=None, b200=None, hk_=None, nilai=None, vol=None, ritel=None) -> bytes:
     nilai = nilai or bd.penilaian(r, alr, rk)
     kep, alasan = lp.keputusan(r, rk, f, alr, nilai, hk_)
     L: list[str] = []
@@ -266,6 +266,20 @@ def txt_bytes(r, rk, f, waktu: str, ovn=None, alr=None, b200=None, hk_=None, nil
         add("akumulator(kode:net_lot@avg|harga_vs_avg)=" + ",".join(f"{x['code']}:{_i(x['net_lot'])}@{_i(x['avg'])}|{_p(x['floating'], 0)}" for x in b200["akumulator"]))
         add("distributor=" + ",".join(f"{x['code']}:{_i(x['net_lot'])}@{_i(x['avg'])}" for x in b200["distributor"]))
 
+    if ritel:
+        w, pj, s_ = ritel.get("window"), ritel.get("panjang"), ritel.get("sid")
+        add(f"## MINAT RITEL (SID & broker ritel {'/'.join((w or {}).get('codes', [])) or '-'})")
+        add(f"status={ritel['status']} minat={ritel['minat']}")
+        if s_:
+            add("SID(bulan:jumlah@harga)=" + ",".join(f"{str(t)[:7]}:{v:.0f}@{_i(pr)}" for t, v, pr in s_["seri"])
+                + f" arah={s_['arah']} chg_3b={_p(s_['chg'])} chg_1b={_p(s_['chg_1b'])} (data bulanan KSEI, terlambat)")
+        for nm, x in (("window", w), ("periode_panjang", pj)):
+            if x and x.get("status") not in (None, "TIDAK DIUKUR"):
+                add(f"ritel_{nm}: {x['status']} net={_i(x.get('net_lot'))}lot ({_p(x.get('net_pct'))} vol)"
+                    + (f" porsi_beli/jual={_pu(x.get('porsi_beli'))}/{_pu(x.get('porsi_jual'))} avg_beli={_f(x.get('avg_beli'))} harga_vs_avg={_p(x.get('floating'))}"
+                       if x.get("porsi_beli") is not None else "")
+                    + (" | " + ",".join(f"{b['code']}:{_i(b['net_lot'])}" for b in x["per_broker"]) if x.get("per_broker") else ""))
+        add("tafsir=" + ritel["ringkas"] + " SID turun = minat ritel menurun (saham tidak menarik saat ini).")
     if vol:
         add("## VOLUME")
         add(" ".join(f"avg{n}h={_i(vol[n]['lot_rata'])}lot({_f(vol[n]['nilai_rata'] / 1e9)}M)" for n in (20, 60, 200) if n in vol)

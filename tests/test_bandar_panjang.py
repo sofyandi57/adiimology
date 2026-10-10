@@ -46,3 +46,12 @@ def test_bandar_nyangkut_vs_untung():
     assert jual["nyangkut"] == "TIDAK ADA AKUMULATOR BERSIH"
     with pytest.raises(ad.AdimologyError):
         bd.bandar_panjang(C(rows), "TEST", TGL[:10], harga=900.0)
+
+
+def test_bandar_panjang_includes_ritel_flow():
+    rows = [_row("XL", -3_000_000, 1000.0), _row("AA", 4_000_000, 1000.0), _row("YP", -1_000_000, 1001.0)]
+    for r in rows:
+        r["net_value"] = str(int(r["net_volume"]) * 1000)
+    p = bd.bandar_panjang(C(rows), "TEST", TGL, harga=1000.0, excl=("XL", "YP"), ritel_codes=("XL", "YP"))
+    assert p["ritel"]["status"] == "RITEL NET JUAL (dikeringkan)" and p["ritel"]["net_lot"] == pytest.approx(-40_000)
+    assert bd.bandar_panjang(C(rows), "TEST", TGL, harga=1000.0, excl=("XL",))["ritel"] is None

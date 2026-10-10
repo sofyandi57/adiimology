@@ -125,7 +125,7 @@ def ringkasan_rows(r, rk: dict | None, f: dict | None, waktu: str, alr: dict | N
 
 # ------------------------------------------------------------------------ Excel
 def excel_bytes(r, rk: dict | None, f: dict | None, waktu: str, ovn: dict | None = None, alr: dict | None = None,
-                b200: dict | None = None, hk_: dict | None = None) -> bytes:
+                b200: dict | None = None, hk_: dict | None = None, ritel: dict | None = None) -> bytes:
     buf = io.BytesIO()
     kep, alasan = keputusan(r, rk, f, alr, None, hk_)
     with pd.ExcelWriter(buf, engine="openpyxl") as xw:
@@ -160,6 +160,9 @@ def excel_bytes(r, rk: dict | None, f: dict | None, waktu: str, ovn: dict | None
             if hk_["pv"]:
                 hk_["pv"]["harian"].assign(label=hk_["pv"]["harian"]["label"].map(hk.PV_TEKS)).to_excel(
                     xw, sheet_name="Harga-volume 5h", index=False)
+        if ritel:
+            pd.DataFrame([{"status": ritel["status"], "minat": ritel["minat"], "ringkas": ritel["ringkas"]}] +
+                         [{"status": "", "minat": "", "ringkas": x} for x in ritel["poin"]]).to_excel(xw, sheet_name="Minat ritel", index=False)
         pd.DataFrame(al.ringkas(r, alr)).to_excel(xw, sheet_name="Konfirmasi aliran", index=False)
         pd.DataFrame([{"Catatan": bd.HASIL_BACKTEST}]).to_excel(xw, sheet_name="Hasil backtest", index=False)
         if alr is not None and not alr["konsistensi"].empty:
@@ -264,7 +267,7 @@ def _fund_table(df: pd.DataFrame, mark: dict, kunci: str, lebar: float):
 
 
 def pdf_bytes(r, rk: dict | None, f: dict | None, waktu: str, ovn: dict | None = None, alr: dict | None = None,
-              b200: dict | None = None, hk_: dict | None = None) -> bytes:
+              b200: dict | None = None, hk_: dict | None = None, ritel: dict | None = None) -> bytes:
     buf = io.BytesIO()
     doc = SimpleDocTemplate(buf, pagesize=A4, leftMargin=1.6 * cm, rightMargin=1.6 * cm, topMargin=1.4 * cm,
                             bottomMargin=1.4 * cm, title=f"Riset {r.params.kode}", author="Adimology Calculator")
@@ -311,6 +314,9 @@ def pdf_bytes(r, rk: dict | None, f: dict | None, waktu: str, ovn: dict | None =
                     for x in nilai["kriteria"]], [W * 0.3, W * 0.12, W * 0.58], cell_bg=bg))
     for j in nilai["jebakan"]:
         el.append(_tbl([[Paragraph("JEBAKAN: " + _safe(j), p)]], [W], header=False, cell_bg={(0, 0): "#FEE2E2"}))
+    if ritel:
+        el.append(_tbl([[Paragraph(_safe(f"Minat ritel: {ritel['status']} (minat {ritel['minat']}). {ritel['ringkas']} "
+                                         + " ".join(ritel["poin"])), p)]], [W], header=False, cell_bg={(0, 0): "#E0F2FE"}))
     for i_ in nilai["info"]:
         el.append(Paragraph(_safe("Info: " + i_), small))
     el.append(Paragraph(_safe("* kriteria inti. Hasil backtest Adimology: " + bd.HASIL_BACKTEST), small))

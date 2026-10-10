@@ -154,6 +154,9 @@ def sid_trend(client, kode: str, bulan: int = 3) -> dict:
         return dict(status="TIDAK DIUKUR", n=len(df))
     a, b = df.iloc[-bulan - 1], df.iloc[-1]
     chg = float(b["value"] / a["value"] - 1)
+    chg_1b = float(df["value"].iloc[-1] / df["value"].iloc[-2] - 1)
+    arah = "TURUN" if chg <= -0.02 else "NAIK" if chg >= 0.02 else "STABIL"
+    seri = [(x.tgl.date(), float(x.value), None if pd.isna(x.price) else float(x.price)) for x in df.tail(7).itertuples()]
     pchg = float(b["price"] / a["price"] - 1) if pd.notna(a["price"]) and a["price"] > 0 and pd.notna(b["price"]) else np.nan
     if chg <= -0.03 and (np.isnan(pchg) or abs(pchg) <= 0.10):
         st = "SID TURUN SAAT SIDEWAYS"
@@ -164,7 +167,7 @@ def sid_trend(client, kode: str, bulan: int = 3) -> dict:
     else:
         st = "SID STABIL"
     return dict(status=st, n=len(df), dari=a["tgl"].date(), sampai=b["tgl"].date(), sid_awal=float(a["value"]),
-                sid_akhir=float(b["value"]), chg=chg, price_chg=pchg)
+                sid_akhir=float(b["value"]), chg=chg, price_chg=pchg, arah=arah, chg_1b=chg_1b, seri=seri)
 
 
 def pra_open(client, kode: str) -> dict:
@@ -311,15 +314,16 @@ def checklist(r, rk, pv, obb, rn, prof, nilai, min_nilai_m: float = 5.0) -> dict
     return dict(kriteria=ks, lolos_inti=lolos, hasil=hasil)
 
 
-def analisa(client, r, rk: dict | None, nilai: dict, min_nilai_m: float = 5.0) -> dict:
+def analisa(client, r, rk: dict | None, nilai: dict, min_nilai_m: float = 5.0, sid: dict | None = None) -> dict:
     df = rk["ind"] if rk and rk.get("ind") is not None else r.chart
     pv = pv_baca(df)
     obb = baca_orderbook(r.ob)
     rn = rencana(rk, r.params.fee_beli, r.params.fee_jual)
-    try:
-        sid = sid_trend(client, r.params.kode) if client is not None else None
-    except Exception:  # endpoint SID bisa tidak tersedia di paket API tertentu
-        sid = None
+    if sid is None:
+        try:
+            sid = sid_trend(client, r.params.kode) if client is not None else None
+        except Exception:  # endpoint SID bisa tidak tersedia di paket API tertentu
+            sid = None
     prof = profil(rk, pv, (r.konsentrasi or {}).get("status"), sid)
     cl = checklist(r, rk, pv, obb, rn, prof, nilai, min_nilai_m)
     return dict(pv=pv, ob=obb, rencana=rn, sid=sid, profil=prof, checklist=cl)

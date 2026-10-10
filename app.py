@@ -455,6 +455,9 @@ PETUNJUK = """
 sentuh target sebelum stop) untuk ditempel ke Claude/ChatGPT, mis. untuk bertanya peluang naik, cocok hold/swing/scalping,
 dan harga masuk.
 
+**Minat ritel** (bawah tab Rekomendasi): jumlah investor (SID) naik/turun dan aliran broker ritel (XL, XC, PD, CC, YP;
+bisa diubah di sidebar). SID turun = minat ritel menurun; ritel net jual + SID turun = ritel dikeringkan.
+
 **Aturan Hengky** (tab baru): checklist disiplin trading dari materi Ko Hengky (Remora): uptrend, likuid, beli di
 support/breakout (bukan resistance), level pembatal (stop 1 tick, entry reason = exit reason), harga–volume (Wyckoff),
 bid–offer (lot per antrean, angka cantik, dinding), SID, tombol pra-open IEP/IEV. Keputusan BELI di PDF butuh semua
@@ -544,6 +547,8 @@ with st.sidebar.form("param"):
                                help="Top 3: barang = total net 3 akumulator teratas, avg = rata-rata tertimbang volume beli.")
     excl = st.text_input("Broker dikecualikan (pisah koma)", value=", ".join(al.RITEL_DEFAULT),
                          help="Broker dominan ritel yang bukan bandar: XL (Stockbit), YP (Mirae), XC (Ajaib), PD (Indo Premier).")
+    ritel_in = st.text_input("Broker ritel (untuk minat ritel)", value=", ".join(al.RITEL_ANALISA),
+                             help="Net jual broker ini = ritel dikeringkan; net beli = akumulasi ritel. Tidak memengaruhi pemilihan bandar.")
     b200_on = st.checkbox("Info bandar jangka panjang (akumulasi/distribusi, nyangkut atau tidak)", value=True,
                           help="Satu panggilan API untuk broker summary seluruh periode di bawah.")
     b200_hari = st.number_input("Jumlah hari bursa jangka panjang", 20, 250, 200, 10)
@@ -591,6 +596,7 @@ if submitted:
     st.session_state.pop("b200", None)
     st.session_state.pop("hengky", None)
     st.session_state.pop("pra_open", None)
+    st.session_state.pop("ritel", None)
     if not key:
         st.session_state["res"] = ("err", "Isi API key Invezgo di sidebar atau di st.secrets.")
     else:
@@ -628,12 +634,22 @@ if submitted:
                     with st.spinner(f"Menganalisa bandar {int(b200_hari)} hari terakhir..."):
                         st.session_state["b200"] = ("ok", bd.bandar_panjang(
                             CachedClient(key), r0.params.kode, src_n["tgl"].tolist(), r0.harga, r0.bs,
-                            r0.params.broker_dikecualikan, r0.params.investor, r0.params.market, hari=int(b200_hari)))
+                            r0.params.broker_dikecualikan, r0.params.investor, r0.params.market, hari=int(b200_hari),
+                            ritel_codes=tuple(c.strip().upper() for c in ritel_in.split(",") if c.strip())))
                 except Exception as e:  # bandar jangka panjang gagal tidak boleh mematikan kalkulator
                     st.session_state["b200"] = ("err", str(e) if isinstance(e, ad.AdimologyError) else f"Error tak terduga: {e}")
             try:
+                sid_ = hk.sid_trend(CachedClient(key), r0.params.kode)
+            except Exception:  # endpoint SID bisa tidak tersedia di paket API tertentu
+                sid_ = None
+            ritel_codes = tuple(c.strip().upper() for c in ritel_in.split(",") if c.strip())
+            b2_ = st.session_state.get("b200")
+            ret20_ = float(src_n["close"].iloc[-1] / src_n["close"].iloc[-21] - 1) if len(src_n) > 21 else None
+            st.session_state["ritel"] = al.minat_ritel(sid_, al.ritel_flow(r0.bs, ritel_codes, r0.harga),
+                                                       b2_[1].get("ritel") if b2_ and b2_[0] == "ok" else None, ret20_)
+            try:
                 with st.spinner("Memeriksa aturan Hengky..."):
-                    st.session_state["hengky"] = ("ok", hk.analisa(CachedClient(key), r0, rk_n, st.session_state["nilai"], min_nilai_m))
+                    st.session_state["hengky"] = ("ok", hk.analisa(CachedClient(key), r0, rk_n, st.session_state["nilai"], min_nilai_m, sid_))
             except Exception as e:  # aturan Hengky gagal tidak boleh mematikan kalkulator
                 st.session_state["hengky"] = ("err", str(e) if isinstance(e, ad.AdimologyError) else f"Error tak terduga: {e}")
             try:
@@ -663,11 +679,12 @@ if submitted:
             with st.spinner("Menyiapkan dokumen ekspor..."):
                 for jenis, fn in (("xlsx", lp.excel_bytes), ("pdf", lp.pdf_bytes)):
                     try:
-                        exp[jenis] = fn(r0, rk_, f_, waktu, o_, a_, b_, hk_s)
+                        exp[jenis] = fn(r0, rk_, f_, waktu, o_, a_, b_, hk_s, st.session_state.get("ritel"))
                     except Exception as e:  # ekspor gagal tidak boleh mematikan kalkulator
                         exp[f"{jenis}_err"] = f"{type(e).__name__}: {e}"
                 try:
-                    exp["txt"] = rg.txt_bytes(r0, rk_, f_, waktu, o_, a_, b_, hk_s, st.session_state.get("nilai"), st.session_state.get("vol"))
+                    exp["txt"] = rg.txt_bytes(r0, rk_, f_, waktu, o_, a_, b_, hk_s, st.session_state.get("nilai"), st.session_state.get("vol"),
+                                         st.session_state.get("ritel"))
                 except Exception as e:
                     exp["txt_err"] = f"{type(e).__name__}: {e}"
             st.session_state["export"] = exp
@@ -761,6 +778,35 @@ def baris_rencana(rk: dict) -> list[dict]:
 
 def _p(v):
     return "-" if v is None or pd.isna(v) else f"{v:.0%}"
+
+
+def tampil_ritel() -> None:
+    m = st.session_state.get("ritel")
+    if not m:
+        return
+    st.divider()
+    st.subheader("Minat ritel: jumlah investor (SID) dan aliran broker ritel")
+    box = {"RITEL MASUK / AKUMULASI RITEL": st.warning, "MINAT RITEL MENINGKAT": st.success}.get(m["status"], st.info)
+    box(f"**{m['status']}** · minat ritel: **{m['minat']}**  \n{m['ringkas']}", icon="👥")
+    for p_ in m["poin"]:
+        st.markdown(f"- {p_}")
+    s_ = m.get("sid")
+    c1, c2 = st.columns(2)
+    if s_ and s_.get("seri"):
+        c1.markdown("**SID per bulan**")
+        c1.dataframe(pd.DataFrame(s_["seri"], columns=["Tanggal", "Jumlah investor", "Harga"]), hide_index=True, width="stretch",
+                     column_config={"Jumlah investor": st.column_config.NumberColumn(format="%,.0f"),
+                                    "Harga": st.column_config.NumberColumn(format="%,.0f")})
+    w = m.get("window")
+    if w and w.get("per_broker"):
+        c2.markdown(f"**Broker ritel di window** (net {w['net_lot']:+,.0f} lot)")
+        c2.dataframe(pd.DataFrame(w["per_broker"]), hide_index=True, width="stretch", column_config={
+            "code": "Kode", "net_lot": st.column_config.NumberColumn("Net (lot)", format="%,.0f"),
+            "buy_avg": st.column_config.NumberColumn("Avg beli", format="%,.1f"),
+            "sell_avg": st.column_config.NumberColumn("Avg jual", format="%,.1f")})
+    st.caption("SID turun = minat ritel menurun (saham sedang tidak menarik). Data SID bulanan dari KSEI dan terlambat. 'Ritel dikeringkan' "
+               "(SID turun + ritel net jual + harga sideways) dalam materi dianggap tahap akumulasi pihak besar, tetapi belum terbukti "
+               "sebagai sinyal naik. Daftar broker ritel dapat diubah di sidebar.")
 
 
 def tampil_bpjp_bsjp():
@@ -872,6 +918,7 @@ with tab_rek:
         catatan = ("MA200 belum tersedia (data < 200 hari bursa). " if rk["ma"][200] is None else "")
         st.caption(f"{catatan}Data {rk['n_bar']} hari bursa s/d {rk['tgl']}. Support/resistance dari swing high/low "
                    "±5 hari (250 hari terakhir), SL = support − 1 ATR14. Edukasi, bukan ajakan transaksi.")
+    tampil_ritel()
     tampil_bpjp_bsjp()
 
 

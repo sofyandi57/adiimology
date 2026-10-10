@@ -113,3 +113,83 @@ def ringkas(r: ad.Result, a: dict | None) -> list[dict]:
                          "Detail": "; ".join(f"{x['name']} ({x['format_securities']}, {x['next_pct']:.1f}%)" for x in f["cocok"][:3])
                                    or f"broker bandar tidak dipakai pemegang ≥5% (12 bln, {f['n']} laporan)"})
     return rows
+
+
+# ----------------------------------------------------------------- minat ritel
+RITEL_ANALISA = ("XL", "XC", "PD", "CC", "YP")      # definisi ritel pengguna untuk membaca minat ritel (bukan daftar eksklusi bandar)
+
+
+def ritel_flow(bs: pd.DataFrame, kode_ritel, harga: float | None = None, ambang: float = 0.02) -> dict:
+    """Net beli/jual broker ritel di broker summary: net jual = ritel 'dikeringkan', net beli = ritel akumulasi."""
+    codes = [c.strip().upper() for c in kode_ritel if c and c.strip()]
+    if bs is None or bs.empty or not codes:
+        return dict(status="TIDAK DIUKUR", codes=codes)
+    d = bs.copy()
+    for c in ("net_volume", "buy_volume", "sell_volume", "buy_avg", "sell_avg"):
+        if c in d:
+            d[c] = pd.to_numeric(d[c], errors="coerce")
+    total = float(d["buy_volume"].sum()) / 100
+    b = d[d["code"].isin(codes)]
+    if b.empty or total <= 0:
+        return dict(status="TIDAK ADA TRANSAKSI RITEL", codes=codes, per_broker=[], net_lot=0.0, net_pct=0.0)
+    net = float(b["net_volume"].sum()) / 100
+    wb = b["buy_volume"].where(b["buy_avg"].notna(), 0)
+    avg_beli = float((b["buy_avg"].fillna(0) * wb).sum() / wb.sum()) if wb.sum() > 0 else float("nan")
+    pct = net / total
+    status = "RITEL NET JUAL (dikeringkan)" if pct <= -ambang else "RITEL NET BELI (akumulasi ritel)" if pct >= ambang else "RITEL NETRAL"
+    per = [dict(code=r["code"], net_lot=float(r["net_volume"]) / 100, buy_avg=None if pd.isna(r["buy_avg"]) else float(r["buy_avg"]),
+                sell_avg=None if pd.isna(r["sell_avg"]) else float(r["sell_avg"])) for _, r in b.sort_values("net_volume").iterrows()]
+    return dict(status=status, codes=codes, net_lot=net, net_pct=pct, porsi_beli=float(b["buy_volume"].sum()) / 100 / total,
+                porsi_jual=float(b["sell_volume"].sum()) / 100 / total, avg_beli=avg_beli,
+                floating=(harga / avg_beli - 1) if harga and avg_beli and avg_beli > 0 else float("nan"), per_broker=per)
+
+
+def minat_ritel(sid: dict | None, fw: dict | None, fl: dict | None = None, ret20: float | None = None) -> dict:
+    """Gabungkan SID (jumlah investor) dan aliran broker ritel jadi satu bacaan minat ritel.
+
+    SID turun = minat ritel menurun (saham sedang tidak menarik). Bila ritel juga net jual dan harga sideways/turun,
+    itu pola 'ritel dikeringkan' yang dalam materi dianggap tahap akumulasi pihak besar, tetapi BUKAN sinyal naik segera.
+    """
+    ada_sid = bool(sid and sid.get("status") not in (None, "TIDAK DIUKUR"))
+    arah = sid["arah"] if ada_sid else None
+    f = fw if fw and fw.get("status") not in ("TIDAK DIUKUR",) else None
+    jual = f is not None and f["status"].startswith("RITEL NET JUAL")
+    beli = f is not None and f["status"].startswith("RITEL NET BELI")
+    poin = []
+    if ada_sid:
+        poin.append(f"SID {sid['sid_awal']:,.0f} -> {sid['sid_akhir']:,.0f} ({sid['chg']:+.1%}, {sid['dari']}..{sid['sampai']}); "
+                    f"bulan terakhir {sid['chg_1b']:+.1%}. Data bulanan (KSEI), bisa terlambat.")
+    if f:
+        poin.append(f"Broker ritel {'/'.join(f['codes'])} window: net {f['net_lot']:+,.0f} lot ({f['net_pct']:+.1%} dari volume) -> {f['status']}")
+    if fl and fl.get("status") not in (None, "TIDAK DIUKUR", "TIDAK ADA TRANSAKSI RITEL"):
+        poin.append(f"Periode panjang: net {fl['net_lot']:+,.0f} lot ({fl['net_pct']:+.1%}) -> {fl['status']}")
+    sideways = ret20 is not None and -0.10 <= ret20 <= 0.10
+    if arah == "TURUN" and jual:
+        status = "RITEL KELUAR / DIKERINGKAN"
+        ring = ("SID turun dan broker ritel net jual: minat ritel menurun (saham sedang tidak menarik)."
+                + (" Harga sideways/turun: pola yang dalam materi dianggap akumulasi pihak besar, tetapi belum sinyal naik; "
+                   "konfirmasi dengan konsentrasi beli bandar." if sideways or (ret20 is not None and ret20 < 0) else
+                   " Harga sudah naik: ritel menjual ke kenaikan, waspada distribusi."))
+    elif arah == "TURUN" and beli:
+        status = "CAMPURAN: SID TURUN, RITEL NET BELI"
+        ring = "Jumlah investor turun tetapi broker ritel membeli: sisa ritel menambah posisi; minat umum menurun."
+    elif arah == "TURUN":
+        status = "MINAT RITEL MENURUN"
+        ring = "SID turun: saham sedang tidak menarik bagi ritel."
+    elif arah == "NAIK" and beli:
+        status = "RITEL MASUK / AKUMULASI RITEL"
+        ring = ("SID naik dan broker ritel net beli: minat ritel meningkat. Bila harga sudah naik atau bandar net jual, "
+                "waspada bandar mendistribusikan barang ke ritel.")
+    elif arah == "NAIK" and jual:
+        status = "CAMPURAN: SID NAIK, RITEL NET JUAL"
+        ring = "Investor baru bertambah tetapi broker ritel net jual: sinyal tidak searah."
+    elif arah == "NAIK":
+        status = "MINAT RITEL MENINGKAT"
+        ring = "SID naik: saham makin diminati ritel."
+    elif f is not None:
+        status = "RITEL DIKERINGKAN (tanpa data SID)" if jual else "RITEL AKUMULASI (tanpa data SID)" if beli else "RITEL NETRAL"
+        ring = "Hanya aliran broker ritel yang terukur; SID tidak tersedia."
+    else:
+        status, ring = "TIDAK DIUKUR", "SID dan aliran broker ritel tidak tersedia."
+    minat = {"TURUN": "MENURUN (tidak menarik saat ini)", "NAIK": "MENINGKAT", "STABIL": "STABIL"}.get(arah, "TIDAK DIUKUR")
+    return dict(status=status, minat=minat, ringkas=ring, poin=poin, sid=sid if ada_sid else None, window=f, panjang=fl)

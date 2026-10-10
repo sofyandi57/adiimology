@@ -75,6 +75,11 @@ def test_app_runs_and_computes(monkeypatch, tmp_path):
     ovn = at.session_state["ovn"]
     assert ovn[0] == "ok" and ovn[1]["n_hari"] == 40 and ovn[1]["sinyal"]["bsjp"] is not None
     assert any("BSJP" in m.value for m in at.markdown)
+    rit = at.session_state["ritel"]
+    assert rit["minat"].startswith("MENURUN") and rit["status"] == "CAMPURAN: SID TURUN, RITEL NET BELI"   # SID 5000->4600; CC & XL net beli
+    assert rit["window"]["codes"] == ["XL", "XC", "PD", "CC", "YP"]
+    assert any("Minat ritel" in x.value for x in at.subheader)
+    assert b"## MINAT RITEL" in at.session_state["export"]["txt"] and b"minat=MENURUN" in at.session_state["export"]["txt"]
     hkr = at.session_state["hengky"]
     assert hkr[0] == "ok" and not hkr[1]["checklist"]["lolos_inti"]            # data tiruan: tidak uptrend / data kurang
     assert any("Aturan" in d.value.columns and "Status" in d.value.columns for d in at.dataframe)

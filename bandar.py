@@ -209,7 +209,8 @@ def volume_rata(df: pd.DataFrame, harga: float | None = None) -> dict:
 
 
 def bandar_panjang(client, kode: str, tgl_list: list, harga: float, bs_window: pd.DataFrame | None = None,
-                   excl=(), investor: str = "all", market: str = "RG", hari: int = 200, nyangkut_pct: float = 0.05) -> dict:
+                   excl=(), investor: str = "all", market: str = "RG", hari: int = 200, nyangkut_pct: float = 0.05,
+                   ritel_codes=()) -> dict:
     """Akumulasi/distribusi N hari bursa terakhir dan apakah bandar nyangkut (harga di bawah modal rata-rata).
 
     Satu panggilan API (broker summary rentang panjang). 'Modal' = rata-rata harga beli tertimbang volume beli
@@ -259,4 +260,5 @@ def bandar_panjang(client, kode: str, tgl_list: list, harga: float, bs_window: p
                                            "ada risiko ambil untung")
     return dict(dari=tgl[0], sampai=tgl[-1], hari=len(tgl), n_broker=int(len(bs)), status=status, net_acc5_value=net_acc5,
                 net_dist5_value=net_dist5, modal_top3=modal3, net_top3_lot=net3, floating_top3=fl3, nyangkut=nyangkut,
-                keterangan=ket, akumulator=acc, distributor=dist, konsentrasi=ad.konsentrasi(bs, excl))
+                keterangan=ket, akumulator=acc, distributor=dist, konsentrasi=ad.konsentrasi(bs, excl),
+                ritel=__import__("aliran").ritel_flow(bs, ritel_codes, harga) if ritel_codes else None)

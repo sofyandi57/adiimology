@@ -40,10 +40,19 @@ def test_txt_is_compact_and_complete():
                 akumulator=[{"code": "AA", "broker": "X", "net_lot": 5000.0, "avg": 300.0, "floating": -0.12, "net_window_lot": 1.0}],
                 distributor=[{"code": "BB", "broker": "Y", "net_lot": -3000.0, "avg": 320.0, "floating": -0.1, "net_window_lot": 1.0}],
                 konsentrasi={"status": "TERSEBAR"})
-    out = rg.txt_bytes(r, rk, f, "2026-10-11 02:00 WIB", ovn, _aliran(), b200, hkr, None, bd.volume_rata(rk["ind"])).decode()
+    import aliran as al_mod
+    import datetime as dt_
+    sid = dict(status="SID TURUN SAAT SIDEWAYS", arah="TURUN", sid_awal=1000.0, sid_akhir=900.0, chg=-0.1, chg_1b=-0.03,
+               dari=dt_.date(2026, 6, 28), sampai=dt_.date(2026, 9, 28), price_chg=0.0,
+               seri=[(dt_.date(2026, 6, 28), 1000.0, 500.0), (dt_.date(2026, 9, 28), 900.0, 498.0)])
+    fw = al_mod.ritel_flow(pd.DataFrame([{"code": "XL", "net_volume": -2e6, "buy_volume": 1e6, "sell_volume": 3e6, "buy_avg": 100.0, "sell_avg": 101.0},
+                                         {"code": "AA", "net_volume": 2e6, "buy_volume": 3e6, "sell_volume": 1e6, "buy_avg": 99.0, "sell_avg": 100.0}]), ("XL",), 98.0)
+    ritel = al_mod.minat_ritel(sid, fw, None, -0.02)
+    out = rg.txt_bytes(r, rk, f, "2026-10-11 02:00 WIB", ovn, _aliran(), b200, hkr, None, bd.volume_rata(rk["ind"]), ritel).decode()
     for h in ("# TEST", "## KEPUTUSAN APP", "## HARGA", "## TEKNIKAL", "## RENCANA APP", "## STATISTIK HISTORIS HARGA",
               "## GAYA TRADING", "## BANDAR (window)", "## BANDAR 200H", "## VOLUME", "## BPJP/BSJP", "## FUNDAMENTAL", "## CATATAN SUMBER"):
         assert h in out, h
+    assert "## MINAT RITEL" in out and "arah=TURUN" in out and "status=RITEL KELUAR / DIKERINGKAN" in out and "SID turun = minat ritel menurun" in out
     assert "nyangkut=NYANGKUT" in out and "P(naik)" in out and "area_beli=" in out and "UNTUK AI:" in out
     assert len(out.encode()) < 14_000, len(out.encode())
     assert out.count("\n") < 140
