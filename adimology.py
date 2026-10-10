@@ -230,6 +230,21 @@ def _parse_levels(items, side: str) -> dict:
     return levels
 
 
+def _parse_freq(items, side: str) -> dict:
+    """Frekuensi antrean per harga (untuk 'lot per antrean' = lot / frekuensi)."""
+    out: dict = {}
+    for it in (items or []):
+        if not isinstance(it, dict):
+            continue
+        for k, v in it.items():
+            m = re.fullmatch(rf"{side}(\d+)price", k)
+            if m:
+                price = _num(v)
+                if price > 0:
+                    out[price] = out.get(price, 0) + _num(it.get(f"{side}{m.group(1)}freq"))
+    return out
+
+
 def get_orderbook(client: InvezgoClient, kode: str, p: Params) -> dict | None:
     params = {"market": p.market}
     if p.ob_date and p.ob_time:
@@ -248,7 +263,8 @@ def get_orderbook(client: InvezgoClient, kode: str, p: Params) -> dict | None:
                 bid_terbawah=min(bids), offer_teratas=max(offers),
                 best_bid=max(bids), best_offer=min(offers),
                 papan=papan, lot_per_papan=(total_bid + total_offer) / papan,
-                n_levels=len(bids) + len(offers))
+                n_levels=len(bids) + len(offers),
+                bids_freq=_parse_freq(ob.get("bid"), "bid"), offers_freq=_parse_freq(ob.get("offer"), "offer"))
 
 
 OB_HISTORIS_SEJAK = dt.date(2026, 3, 25)       # snapshot orderbook historis Invezgo tersedia sejak tanggal ini
