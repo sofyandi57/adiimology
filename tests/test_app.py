@@ -81,6 +81,7 @@ def test_app_runs_and_computes(monkeypatch, tmp_path):
     assert rit["window"]["codes"] == ["XL", "XC", "PD", "CC", "YP"]
     assert any("Minat ritel" in x.value for x in at.subheader)
     assert b"## MINAT RITEL" in at.session_state["export"]["txt"] and b"minat=MENURUN" in at.session_state["export"]["txt"]
+    assert b"## LEDGER BROKER" in at.session_state["export"]["txt"] and b"## LEDGER BROKER" in at.session_state["export"]["md"] and "csv" in at.session_state["export"]
     hkr = at.session_state["hengky"]
     assert hkr[0] == "ok" and not hkr[1]["checklist"]["lolos_inti"]            # data tiruan: tidak uptrend / data kurang
     assert any("Aturan" in d.value.columns and "Status" in d.value.columns for d in at.dataframe)

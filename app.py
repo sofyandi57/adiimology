@@ -771,6 +771,15 @@ if submitted:
             exp = {"nama": nama_file}
             b_ = (st.session_state.get("b200") or (None, None))[1] if (st.session_state.get("b200") or (None,))[0] == "ok" else None
             hk_s = (st.session_state.get("hengky") or (None, None))[1] if (st.session_state.get("hengky") or (None,))[0] == "ok" else None
+            led_ = None
+            try:   # ledger dibaca dari database (tanpa API); kosong -> bagian N/A di laporan
+                import ledger as lg_, ledger_calc as lc_, ledger_ui as lu_
+                b_l, m_l = lg_.muat(lu_._engine()[0], r0.params.kode, 60)
+                if not b_l.empty and not m_l.empty:
+                    led_ = lc_.jalankan(b_l, m_l, lc_.Cfg(), lg_.log_api(lu_._engine()[0], r0.params.kode))
+            except Exception:
+                led_ = None
+            exp["csv"] = __import__("ledger_calc").csv_ai(led_)
             with st.spinner("Menyiapkan dokumen ekspor..."):
                 for jenis, fn in (("xlsx", lp.excel_bytes), ("pdf", lp.pdf_bytes)):
                     try:
@@ -782,7 +791,7 @@ if submitted:
                         exp[jenis_] = fn_(r0, rk_, f_, waktu, o_, a_, b_, hk_s, st.session_state.get("nilai"), st.session_state.get("vol"),
                                           st.session_state.get("ritel"),
                                           status={k_: st.session_state.get(k_) for k_ in ("tek", "fund", "ovn", "aliran", "b200", "hengky", "dinamis")},
-                                          snapshot=now.replace(tzinfo=None))
+                                          snapshot=now.replace(tzinfo=None), ledger=led_)
                     except Exception as e:
                         exp[f"{jenis_}_err"] = f"{type(e).__name__}: {e}"
             st.session_state["export"] = exp
@@ -801,6 +810,9 @@ if exp:
     if "md" in exp:
         st.sidebar.download_button("📝 Unduh Markdown (untuk AI)", exp["md"], f"{exp['nama']}.md", mime="text/markdown", width="stretch",
                                    help=f"Struktur sama dengan TXT tetapi berupa heading, tabel, dan daftar ({len(exp['md']) / 1024:.1f} KB).")
+    if "csv" in exp:
+        st.sidebar.download_button("📈 Unduh CSV ledger (untuk AI)", exp["csv"], f"{exp['nama']}_ledger.csv", mime="text/csv", width="stretch",
+                                   help="Ledger harian broker relevan (net lot, kumulatif, harga, status, proksi biaya). Kosong bila ledger belum diperbarui.")
     for jenis in ("xlsx", "pdf", "txt", "md"):
         if f"{jenis}_err" in exp:
             st.sidebar.error(f"Gagal membuat {jenis.upper()}: {exp[f'{jenis}_err']}")

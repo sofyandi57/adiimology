@@ -196,3 +196,16 @@ def test_ui_tab_ledger(tmp_path, monkeypatch):
     md = " ".join([m.value for m in at.markdown] + [m.value for m in at.subheader])
     assert "Ledger Broker" in md and "Cakupan" in md and "Estimasi posisi" in md
     assert any("NET_FLOW_PROXY" in str(c.value) for c in at.caption) or "NET_FLOW_PROXY" in md
+
+
+def test_ekspor_ai_txt_md_csv(hasil):
+    import datetime as dt2
+    L = lc.baris_ai(hasil, "TST")
+    t = "\n".join(L)
+    assert "## LEDGER BROKER" in t and "NET_FLOW_PROXY" in t and "Zona distribusi" in t
+    import ringkas as rg
+    md = "\n".join(rg._md_dari_baris(L))
+    assert "| Broker |" in md
+    assert lc.csv_ai(hasil).startswith(b"trade_date") and b"NET_FLOW_PROXY" in lc.csv_ai(hasil)
+    assert "N/A" in "\n".join(lc.baris_ai(None, "TST"))
+    assert lc.csv_ai(None).startswith(b"info")
