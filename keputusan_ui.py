@@ -120,7 +120,8 @@ def tampil(r, mode: str) -> None:
     ubah = [x["kriteria"] for x in nilai["kriteria"] if x["status"] in ("tidak", "netral")] + \
            ([x["kriteria"] for x in hk_["checklist"]["kriteria"] if x["status"] in ("tidak", "netral") and x["inti"]] if hk_ else [])
     if kep != "BELI":
-        st.markdown("**Keputusan berubah menjadi BELI jika:** " + ("; ".join(f"'{u}' terpenuhi" for u in ubah[:6]) or "tidak ada syarat tersisa") + " (dan tidak ada jebakan).")
+        st.markdown(f"**Agar vonis menjadi BELI:** rata-rata skor ≥ 7,0 (sekarang {sc['rata'] if sc['rata'] is not None else 'N/A'}), tidak ada dimensi di bawah 5,0, harga di area beli, Hitung lengkap, aturan inti Hengky lolos. "
+                    + ("**Kriteria yang BELUM terpenuhi dan menahan skor** (jika terpenuhi, skor naik): " + "; ".join(f"'{u}'" for u in ubah[:6]) + "." if ubah else "Tidak ada kriteria checklist yang tertinggal."))
     if rk:
         sup = rk["sup"][0]["harga"] if rk["sup"] else None
         st.markdown(f"**Batal/keluar:** close di bawah support {sup:,.0f} (SL {rk['sl']:,.0f})" if sup else f"**Batal/keluar:** close di bawah SL {rk['sl']:,.0f}")
