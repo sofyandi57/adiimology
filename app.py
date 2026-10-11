@@ -935,13 +935,43 @@ if exp:
         if f"{jenis}_err" in exp:
             st.sidebar.error(f"Gagal membuat {jenis.upper()}: {exp[f'{jenis}_err']}")
 
+@st.cache_data(ttl=300, show_spinner=False)
+def _kuota_resmi(k: str):
+    return apicache.kuota_resmi(k)
+
+
 _eng_u = db_engine()
 _u = apicache.pemakaian(_eng_u) if _eng_u is not None else None
+_q = _kuota_resmi(key) if key else None
+st.sidebar.divider()
+if _q:
+    pakai, batas = int(_q.get("usage", 0)), int(_q.get("limit", 0)) or 1
+    st.sidebar.progress(min(pakai / batas, 1.0), text=f"Kuota Invezgo: {pakai:,} / {batas:,} (sisa {int(_q.get('remaining', batas - pakai)):,})")
+    st.sidebar.caption(("⛔ API key diblokir. " if _q.get("isBlocked") else "") + f"Berlaku s/d {str(_q.get('expire', ''))[:10]} · angka resmi dari Invezgo (diperbarui tiap 5 menit).")
+elif _u and _u["req"] is not None:
+    st.sidebar.progress(min(_u["req"] / _u["kuota"], 1.0), text=f"Kuota API {_u['bulan']}: {_u['req']:,} / {_u['kuota']:,} (perkiraan)")
 if _u and _u["req"] is not None:
-    st.sidebar.divider()
-    st.sidebar.progress(min(_u["req"] / _u["kuota"], 1.0), text=f"Kuota API {_u['bulan']}: {_u['req']:,} / {_u['kuota']:,}")
-    st.sidebar.caption(f"Dihemat cache database: {_u['hit']:,} permintaan · cache {_u['entri']:,} entri ({_u['ukuran_mb']} MB). "
-                       "Dihitung dari permintaan lewat aplikasi ini saja.")
+    st.sidebar.caption(f"Lewat aplikasi ini bulan {_u['bulan']}: {_u['req']:,} permintaan, dihemat cache {_u['hit']:,}. Selisih dengan angka resmi = pemakaian di luar app "
+                       "(skrip backtest, MCP/Claude, sesi lain, percobaan ulang).")
+if key:
+    with st.sidebar.expander("Rincian pemakaian API (30 hari)"):
+        st.caption("Mengambil log resmi Invezgo. Pemakaian tiap permintaan ke endpoint /usage mungkin ikut dihitung; klik seperlunya.")
+        if st.button("Ambil log 30 hari"):
+            try:
+                st.session_state["_log_api"] = apicache.log_resmi(key)
+            except Exception as e:
+                st.session_state["_log_api"] = None
+                st.error(f"Gagal mengambil log: {type(e).__name__}")
+        lg_df = st.session_state.get("_log_api")
+        if lg_df is not None and not lg_df.empty:
+            st.write(f"{len(lg_df):,} permintaan")
+            st.markdown("**Per sumber**")
+            st.dataframe(lg_df.groupby("sumber").size().rename("req").sort_values(ascending=False).reset_index(), hide_index=True, width="stretch")
+            st.markdown("**Per endpoint**")
+            st.dataframe(lg_df.groupby("endpoint").size().rename("req").sort_values(ascending=False).head(15).reset_index(), hide_index=True, width="stretch")
+            st.markdown("**Per hari**")
+            st.dataframe(lg_df.groupby("tanggal").size().rename("req").sort_index(ascending=False).head(15).reset_index(), hide_index=True, width="stretch")
+            st.markdown(f"**Status ≠ 200:** {int((lg_df['status'] != 200).sum()):,} (429 = kena batas laju; 422 = parameter ditolak, tetap terhitung)")
 
 # ------------------------------------------------------------------------------- main
 st.title("Adimology Calculator")

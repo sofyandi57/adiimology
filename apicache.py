@@ -205,3 +205,36 @@ def pemakaian(eng, now=None) -> dict:
         return dict(bulan=bulan, req=None, hit=None, kuota=KUOTA_BULAN, entri=None, ukuran_mb=None)
     req, hit = (r[0], r[1]) if r else (0, 0)
     return dict(bulan=bulan, req=int(req), hit=int(hit), kuota=KUOTA_BULAN, entri=int(n), ukuran_mb=round((ukuran or 0) / 1e6, 2))
+
+
+# ------------------------------------------------------------- kuota resmi Invezgo
+def kuota_resmi(api_key: str) -> dict | None:
+    """/usage/api: usage, remaining, limit, isBlocked, expire. None bila endpoint/key gagal (jangan mematikan UI)."""
+    try:
+        d = _ad().fetch_json(api_key, "/usage/api", ())
+        if isinstance(d, dict) and "limit" in d:
+            return d
+    except Exception:
+        pass
+    return None
+
+
+def log_resmi(api_key: str, hari: int = 30):
+    """/usage/logs (maks 30 hari) -> DataFrame ringkas: tanggal, endpoint (kode saham dibuang), status, user-agent, ms. Memanggil API."""
+    import pandas as pd
+    t = dt.datetime.now(WIB)
+    raw = _ad().fetch_json(api_key, "/usage/logs", (("from", (t - dt.timedelta(days=min(hari, 30))).strftime("%Y-%m-%d")), ("to", t.strftime("%Y-%m-%d %H:%M:%S"))))
+    return ringkas_log(raw)
+
+
+def ringkas_log(raw):
+    import pandas as pd
+    import re
+    df = pd.DataFrame(raw if isinstance(raw, list) else [])
+    if df.empty:
+        return df
+    df["tanggal"] = pd.to_datetime(df["date"], utc=True, errors="coerce").dt.tz_convert(WIB).dt.date
+    df["endpoint"] = df["url"].astype(str).str.split("?").str[0].map(lambda u: re.sub(r"/[A-Z]{4}$", "/{KODE}", u))
+    ua = df["access"].astype(str)
+    df["sumber"] = ua.map(lambda a: "app/skrip (python)" if "python" in a.lower() else "browser/web" if "mozilla" in a.lower() else a[:30])
+    return df[["tanggal", "endpoint", "status", "sumber", "response_time"]]

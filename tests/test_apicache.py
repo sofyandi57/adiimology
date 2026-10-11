@@ -114,3 +114,20 @@ def test_ditolak_menurut_nama_tahan_reload(eng, monkeypatch):
     with pytest.raises(Exception) as ei2:                    # kedua kali dari cache negatif
         ac.ambil(eng, "/analysis/financial-statement/X", (("limit", "8"),), "k")
     assert ac.ditolak(ei2.value)
+
+
+def test_kuota_resmi_dan_log(monkeypatch):
+    def fake(url, headers=None, params=None, timeout=None):
+        if url.endswith("/usage/api"):
+            return Resp(200, {"usage": 1250, "remaining": 28750, "limit": 30000, "isBlocked": False, "expire": "2026-11-01T07:00:00Z"})
+        return Resp(200, [{"id": "1", "date": "2026-10-10T10:00:00.000+07:00", "method": "GET", "url": "/analysis/chart/stock/BBCA?from=1",
+                           "access": "python-requests/2.31", "status": 200, "response_time": 50},
+                          {"id": "2", "date": "2026-10-10T11:00:00.000+07:00", "method": "GET", "url": "/analysis/chart/stock/GOTO",
+                           "access": "Mozilla/5.0", "status": 422, "response_time": 20}])
+    monkeypatch.setattr(requests, "get", fake)
+    q = ac.kuota_resmi("k")
+    assert q["remaining"] == 28750
+    df = ac.log_resmi("k")
+    assert set(df["endpoint"]) == {"/analysis/chart/stock/{KODE}"} and set(df["sumber"]) == {"app/skrip (python)", "browser/web"}
+    monkeypatch.setattr(requests, "get", lambda *a, **k: Resp(500))
+    assert ac.kuota_resmi("k") is None
