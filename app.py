@@ -680,7 +680,7 @@ konklusif, dengan bukti mendukung, menentang, keyakinan, dan kondisi pembatalan.
   (distribusi terselubung, bandar jual di nego, volume spike tanpa akumulasi, harga sudah dikejar, fase distribusi)
   = WASPADA.
 - **Target Adimology adalah skenario**, bukan prediksi: di backtest tidak lebih baik dari beli acak.
-- Keputusan: bandar = **sensor risiko + penguat**. HINDARI bila bandar menjual/distribusi (veto), fundamental fatal, atau teknikal HINDARI. BELI bila teknikal di area beli + aturan inti Hengky lolos + ada jejak akumulasi (terkonfirmasi = kuat, terindikasi/absorpsi = sedang, posisi lebih kecil). Jebakan ringan, tidak konklusif, atau notasi khusus = TUNGGU.
+- Keputusan dari **tiga skor 1–10**: Bandarmologi, Teknikal, Fundamental, lalu rata-rata. Rata-rata < 4 = HINDARI; ≥ 7 dengan tidak ada dimensi < 5, harga di area beli, Hitung lengkap, dan Hengky lolos = BELI; selain itu TUNGGU. Dimensi 'belum andal' (data kurang, mis. Bandarmologi tanpa ledger ≥ 60 sesi) tidak dipakai untuk vonis bila ada ≥ 2 dimensi andal. Ada panduan terpisah untuk calon pembeli dan pemegang. Skor = heuristik yang belum terbukti.
 
 **Validasi laporan**: TXT memuat STATUS_VALIDASI (rekonsiliasi angka posisi/RR, kesegaran data, kelengkapan fundamental); bila GAGAL,
 jangan dipakai. Kalkulator posisi memakai SATU fungsi dan stop yang sama dengan SL yang ditampilkan.
