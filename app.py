@@ -662,7 +662,7 @@ def ambil_aliran(client: ad.InvezgoClient, r: ad.Result) -> dict:
 
 
 PETUNJUK = """
-**Alur singkat:** isi kode saham (tidak ada kode bawaan) → **Hitung cepat** (±5 panggilan API; keputusan sementara) atau **Hitung lengkap** (semua modul). Tab **Keputusan** menampilkan satu aksi (BELI/TUNGGU/HINDARI-JUAL), angka entry/SL/target, syarat berubah, dan sinyal yang tidak searah. Tombol *Lengkapi analisis* menambah modul tanpa mengulang yang sudah ada. Setiap respons API disimpan di database (cache 7 hari untuk fundamental, permanen untuk data harian yang sudah final) dan kuota bulanan (30.000) ditampilkan di sidebar. Tab **Histori** menyimpan setiap hasil dan laporan lengkapnya (MD/TXT) untuk dipanggil ulang tanpa API, serta *Rapor keputusan*: hasil nyata (TP1 vs SL) dari keputusan masa lalu. Konteks pasar & risiko (IHSG, notasi khusus, keterbukaan, insider, KSEI, peringkat) tampil di tab Keputusan; notasi khusus menahan BELI.
+**Alur singkat:** isi kode saham (tidak ada kode bawaan) → **Hitung cepat** (≈10 panggilan API pertama kali untuk saham baru, 2 di antaranya dipakai bersama semua saham; keputusan sementara) atau **Hitung lengkap** (semua modul, ≈35–40 panggilan pertama kali; jauh lebih sedikit bila diulang atau bila cache/ledger sudah terisi). Tab **Keputusan** menampilkan satu aksi (BELI/TUNGGU/HINDARI-JUAL), angka entry/SL/target, syarat berubah, dan sinyal yang tidak searah. Tombol *Lengkapi analisis* menambah modul tanpa mengulang yang sudah ada. Setiap respons API disimpan di database (cache 7 hari untuk fundamental, permanen untuk data harian yang sudah final) dan kuota bulanan (30.000) ditampilkan di sidebar. Tab **Histori** menyimpan setiap hasil dan laporan lengkapnya (MD/TXT) untuk dipanggil ulang tanpa API, serta *Rapor keputusan*: hasil nyata (TP1 vs SL) dari keputusan masa lalu. Konteks pasar & risiko (IHSG, notasi khusus, keterbukaan, insider, KSEI, peringkat) tampil di tab Keputusan; notasi khusus menahan BELI.
 
 **Ledger Broker** (tab sendiri): catatan broker harian per saham yang disimpan di database. Klik *Perbarui / backfill* (bertahap, terbatas 'Maks panggilan API'); status ACCUMULATION butuh net beli persisten + sinyal pendukung, bukan sekadar net positif. Biaya rata-rata & posisi tersisa = NET_FLOW_PROXY (bukan posisi aktual); broker bukan identitas 'bandar'. Zona distribusi = area penjualan teramati, bukan target broker.
 
@@ -752,6 +752,10 @@ Data cache 5 menit (orderbook 15 detik). Semua hasil adalah edukasi, bukan ajaka
 
 @st.dialog("Petunjuk penggunaan", width="large")
 def petunjuk():
+    pdf_ = os.path.join(os.path.dirname(os.path.abspath(__file__)), "docs", "Petunjuk_Penggunaan_Adimology.pdf")
+    if os.path.exists(pdf_):
+        with open(pdf_, "rb") as fh_:
+            st.download_button("📘 Unduh panduan lengkap (PDF, untuk pemula, dengan contoh DSSA)", fh_.read(), "Petunjuk_Penggunaan_Adimology.pdf", "application/pdf", width="stretch")
     st.markdown(PETUNJUK)
 
 
@@ -810,9 +814,9 @@ with st.sidebar.form("param"):
         fee_b = st.number_input("Fee beli (%)", 0.0, 2.0, 0.15, 0.01) / 100
         fee_j = st.number_input("Fee jual (%)", 0.0, 2.0, 0.25, 0.01) / 100
     sub_cepat = st.form_submit_button("⚡ Hitung cepat", width="stretch",
-                                      help="Hemat kuota (±5 panggilan API): harga, broker window, teknikal, bandar dasar. Tidak ada fundamental, Hengky, ritel, dinamika bandar.")
+                                      help="Hemat kuota (≈10 panggilan API untuk saham baru; ulang di hari yang sama ≈ 0-2): harga, broker window, teknikal, bandar dasar. Tidak ada fundamental, Hengky, ritel, dinamika bandar.")
     sub_lengkap = st.form_submit_button("Hitung lengkap", type="primary", width="stretch",
-                                        help="Semua modul (±12 panggilan API pertama kali; data lambat berubah dipakai ulang dari database).")
+                                        help="Semua modul (≈35-40 panggilan API untuk saham baru; fundamental dipakai ulang 7 hari, ulang di hari yang sama ≈ 0-2).")
 lengkapi = bool(st.session_state.pop("_lengkapi", False))
 submitted = sub_cepat or sub_lengkap or lengkapi
 lengkap = sub_lengkap or lengkapi
