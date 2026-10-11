@@ -14,6 +14,7 @@ import sqlalchemy as sa
 import streamlit as st
 
 import adimology as ad
+import apicache
 import aliran as al
 import audit as au
 import bandar as bd
@@ -70,9 +71,19 @@ def get_api_key() -> str | None:
     return get_secret("INVEZGO_API_KEY") or st.session_state.get("_key_input") or None
 
 
+def db_engine():
+    """Engine DB bersama (ledger + cache API). None bila DB tidak dapat dibuka."""
+    try:
+        import ledger_ui
+        eng = ledger_ui._engine()[0]
+        return apicache.siapkan(eng)
+    except Exception:
+        return None
+
+
 @st.cache_data(ttl=300, show_spinner=False)
 def _cached_fetch(path: str, params_items: tuple, _key: str):
-    return ad.fetch_json(_key, path, params_items)
+    return apicache.ambil(db_engine(), path, params_items, _key)
 
 
 @st.cache_data(ttl=15, show_spinner=False)

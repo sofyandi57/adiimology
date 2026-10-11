@@ -87,11 +87,15 @@ def round_tick(price: float) -> float:
 
 
 # ------------------------------------------------------------------- API client
+REQ_COUNT = [0]          # jumlah permintaan HTTP nyata (termasuk percobaan ulang) sejak proses mulai
+
+
 def fetch_json(api_key: str, path: str, params_items: tuple, retries: int = 3) -> Any:
     """GET ke Invezgo dengan retry. params_items = tuple((k, v), ...) agar mudah di-cache."""
     headers = {"Authorization": f"Bearer {api_key}"}
     last = None
     for i in range(retries):
+        REQ_COUNT[0] += 1
         try:
             r = requests.get(BASE_URL + path, headers=headers, params=dict(params_items), timeout=30)
         except requests.RequestException as e:  # jaringan

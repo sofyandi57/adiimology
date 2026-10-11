@@ -8,6 +8,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 import adimology as ad
+import apicache
 import ledger as lg
 import ledger_calc as lc
 
@@ -57,7 +58,7 @@ def tampil(kode: str, api_key: str | None) -> None:
     if not api_key:
         st.info("Isi API key untuk memperbarui. Data yang sudah tersimpan tetap dapat dianalisis.")
     if upd or rek:
-        client = ad.InvezgoClient(api_key)
+        client = apicache.DbClient(api_key, eng)
         try:
             if upd:
                 bar = st.progress(0.0, text="Mengambil data broker harian…")
