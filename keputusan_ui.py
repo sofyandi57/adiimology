@@ -6,6 +6,7 @@ import streamlit as st
 
 import audit as au
 import bandar as bd
+import konteks as ktx
 import laporan as lp
 
 MODUL = [("tek", "Teknikal"), ("aliran", "Aliran asing/nego"), ("dinamis", "Dinamika bandar"), ("b200", "Bandar 200 hari"),
@@ -39,14 +40,15 @@ def konflik(rk, nilai, hk_, f, r) -> list[str]:
     return k
 
 
+def ctx_sesi(mode: str) -> dict:
+    return dict(mode=mode, konteks=st.session_state.get("konteks"))
+
+
 def hitung(r, mode: str):
     """(kep, alasan, rk, f, alr, hk_, nilai). Mode cepat tidak boleh menghasilkan BELI."""
     rk, f, alr, hk_ = _ok("tek"), _ok("fund"), _ok("aliran"), _ok("hengky")
     nilai = st.session_state.get("nilai") or bd.penilaian(r, alr, rk)
-    kep, alasan = lp.keputusan(r, rk, f, alr, nilai, hk_)
-    if mode == "cepat" and kep == "BELI":
-        kep = "TUNGGU"
-        alasan.append("BELI hanya dapat ditetapkan pada analisis LENGKAP (dinamika bandar & aturan Hengky belum dihitung)")
+    kep, alasan = lp.keputusan(r, rk, f, alr, nilai, hk_, ctx_sesi(mode))
     return kep, alasan, rk, f, alr, hk_, nilai
 
 
@@ -68,6 +70,9 @@ def tampil(r, mode: str) -> None:
     else:
         st.warning("Rencana angka (entry/SL/target) tidak tersedia: analisa teknikal gagal atau data harga kurang.")
 
+    kx = st.session_state.get("konteks")
+    for w in ktx.catatan_risiko(kx):
+        st.warning(w, icon="🚩" if "NOTASI" in w else "⚠️")
     try:
         val = au.validasi(r, rk, f, au.skenario_posisi(r, rk))
     except Exception:
@@ -87,6 +92,10 @@ def tampil(r, mode: str) -> None:
         sup = rk["sup"][0]["harga"] if rk["sup"] else None
         st.markdown(f"**Batal/keluar:** close di bawah support {sup:,.0f} (SL {rk['sl']:,.0f})" if sup else f"**Batal/keluar:** close di bawah SL {rk['sl']:,.0f}")
 
+    with st.expander("🌐 Konteks pasar & risiko (IHSG, notasi khusus, keterbukaan, insider, KSEI, peringkat)", expanded=False):
+        for ln in ktx.baris_laporan(kx)[1:]:
+            st.markdown(ln if ln.startswith("- ") else f"- {ln}")
+        st.caption("Konteks hanya menahan BELI untuk notasi khusus; lainnya peringatan, tidak membalik vonis. Bagian yang 'N/A' berarti endpoint tidak memberi data (tidak ditebak).")
     with st.expander("Dasar keputusan & kualitas data"):
         rows = [("Bandarmologi", f"{nilai['kategori']}" + (f" · bukti: {nilai['tingkat']}" if nilai.get("tingkat") else "")),
                 ("Teknikal", f"{rk['verdict']} · skor {rk['skor']:+d}/±{rk['skor_max']}" if rk else "tidak terukur"),

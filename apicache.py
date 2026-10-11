@@ -78,8 +78,10 @@ def ttl_detik(path: str, params_items: tuple, now: dt.datetime | None = None) ->
         return None                                   # ringkasan harian dikelola ledger (respons mentah sendiri)
     if any(s in path for s in ("financial-statement", "/information/", "/keystat/")):
         return 7 * 86400
-    if any(s in path for s in ("calendar", "shareholder")):
+    if any(s in path for s in ("calendar", "shareholder", "/notation")):
         return 86400
+    if any(s in path for s in ("/disclosure", "/news")):
+        return 3600
     n = (now or dt.datetime.now(dt.timezone.utc)).astimezone(WIB)
     akhir = p.get("to") or p.get("date")
     if akhir:

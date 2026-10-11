@@ -15,6 +15,7 @@ import streamlit as st
 
 import adimology as ad
 import apicache
+import konteks as ktx
 import aliran as al
 import audit as au
 import bandar as bd
@@ -776,6 +777,7 @@ params = ad.Params(
 
 if submitted:
     st.session_state["mode"] = "lengkap" if lengkap else "cepat"
+    st.session_state.pop("konteks", None)
     st.session_state.pop("tek", None)
     st.session_state.pop("fund", None)
     st.session_state.pop("export", None)
@@ -810,6 +812,11 @@ if submitted:
                     st.session_state["tek"] = ("ok", tk.rekomendasi(df_tk, bv))
             except Exception as e:  # teknikal gagal tidak boleh mematikan kalkulator
                 st.session_state["tek"] = ("err", str(e) if _adim_err(e) else f"Error tak terduga: {e}")
+            try:
+                with st.spinner("Mengambil konteks pasar & risiko (IHSG, notasi khusus" + (", keterbukaan, insider, KSEI, peringkat)..." if lengkap else ")...")):
+                    st.session_state["konteks"] = ktx.ambil(CachedClient(key), r0.params.kode, r0.tgl_akhir, penuh=bool(lengkap))
+            except Exception:       # konteks tambahan tidak boleh mematikan kalkulator
+                st.session_state["konteks"] = None
             if aliran_on and lengkap:
                 try:
                     with st.spinner("Mengambil aliran asing, nego, konsistensi, afiliasi..."):
@@ -894,7 +901,8 @@ if submitted:
             with st.spinner("Menyiapkan dokumen ekspor..."):
                 for jenis, fn in (("xlsx", lp.excel_bytes), ("pdf", lp.pdf_bytes)):
                     try:
-                        exp[jenis] = fn(r0, rk_, f_, waktu, o_, a_, b_, hk_s, st.session_state.get("ritel"), (st.session_state.get("nilai") or {}).get("dinamis"))
+                        exp[jenis] = fn(r0, rk_, f_, waktu, o_, a_, b_, hk_s, st.session_state.get("ritel"), (st.session_state.get("nilai") or {}).get("dinamis"),
+                                        ctx=dict(mode="lengkap" if lengkap else "cepat", konteks=st.session_state.get("konteks")))
                     except Exception as e:  # ekspor gagal tidak boleh mematikan kalkulator
                         exp[f"{jenis}_err"] = f"{type(e).__name__}: {e}"
                 for jenis_, fn_ in (("txt", rg.txt_bytes), ("md", rg.md_bytes)):
@@ -902,7 +910,8 @@ if submitted:
                         exp[jenis_] = fn_(r0, rk_, f_, waktu, o_, a_, b_, hk_s, st.session_state.get("nilai"), st.session_state.get("vol"),
                                           st.session_state.get("ritel"),
                                           status={k_: st.session_state.get(k_) for k_ in ("tek", "fund", "ovn", "aliran", "b200", "hengky", "dinamis")},
-                                          snapshot=now.replace(tzinfo=None), ledger=led_)
+                                          snapshot=now.replace(tzinfo=None), ledger=led_,
+                                          ctx=dict(mode="lengkap" if lengkap else "cepat", konteks=st.session_state.get("konteks")))
                     except Exception as e:
                         exp[f"{jenis_}_err"] = f"{type(e).__name__}: {e}"
             st.session_state["export"] = exp

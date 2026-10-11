@@ -46,7 +46,17 @@ def _fatal(f: dict | None) -> list[str]:
 
 
 def keputusan(r, rk: dict | None, f: dict | None, alr: dict | None = None,
-              nilai: dict | None = None, hk_: dict | None = None) -> tuple[str, list[str]]:
+              nilai: dict | None = None, hk_: dict | None = None, ctx: dict | None = None) -> tuple[str, list[str]]:
+    """Keputusan dasar + batas dari konteks (ctx = {'mode': 'cepat'|'lengkap', 'konteks': hasil konteks.ambil}): satu sumber untuk UI, PDF, Excel, TXT, MD."""
+    kep, alasan = _keputusan_dasar(r, rk, f, alr, nilai, hk_)
+    if ctx:
+        import konteks as ktx
+        kep, alasan = ktx.terapkan(kep, alasan, ctx.get("konteks"), ctx.get("mode", "lengkap"))
+    return kep, alasan
+
+
+def _keputusan_dasar(r, rk: dict | None, f: dict | None, alr: dict | None = None,
+                     nilai: dict | None = None, hk_: dict | None = None) -> tuple[str, list[str]]:
     """BELI hanya bila bukti bandarmologi searah (AKUMULASI KUAT) DAN teknikal di area beli; jebakan atau
     fundamental fatal = HINDARI / JUAL. Target Adimology hanya skenario (belum terbukti backtest)."""
     nilai = nilai or bd.penilaian(r, alr, rk)
@@ -103,8 +113,8 @@ def _area(rk: dict) -> str:
 
 
 def ringkasan_rows(r, rk: dict | None, f: dict | None, waktu: str, alr: dict | None = None,
-                   hk_: dict | None = None, dinamis: dict | None = None) -> list[tuple[str, str]]:
-    kep, _ = keputusan(r, rk, f, alr, bd.penilaian(r, alr, rk, dinamis), hk_)
+                   hk_: dict | None = None, dinamis: dict | None = None, ctx: dict | None = None) -> list[tuple[str, str]]:
+    kep, _ = keputusan(r, rk, f, alr, bd.penilaian(r, alr, rk, dinamis), hk_, ctx)
     rows = [("Kode", r.params.kode), ("Nama", (f or {}).get("nama") or "-"), ("Waktu analisa", waktu),
             ("Keputusan", kep), ("Harga terakhir", _n(r.harga)),
             ("Penilaian bandarmologi", bd.penilaian(r, alr, rk, dinamis)["kategori"]),
@@ -127,12 +137,13 @@ def ringkasan_rows(r, rk: dict | None, f: dict | None, waktu: str, alr: dict | N
 
 # ------------------------------------------------------------------------ Excel
 def excel_bytes(r, rk: dict | None, f: dict | None, waktu: str, ovn: dict | None = None, alr: dict | None = None,
-                b200: dict | None = None, hk_: dict | None = None, ritel: dict | None = None, dinamis: dict | None = None) -> bytes:
+                b200: dict | None = None, hk_: dict | None = None, ritel: dict | None = None, dinamis: dict | None = None,
+                ctx: dict | None = None) -> bytes:
     buf = io.BytesIO()
     nilai_ = bd.penilaian(r, alr, rk, dinamis)
-    kep, alasan = keputusan(r, rk, f, alr, nilai_, hk_)
+    kep, alasan = keputusan(r, rk, f, alr, nilai_, hk_, ctx)
     with pd.ExcelWriter(buf, engine="openpyxl") as xw:
-        ring = pd.DataFrame(ringkasan_rows(r, rk, f, waktu, alr, hk_, dinamis), columns=["Item", "Nilai"])
+        ring = pd.DataFrame(ringkasan_rows(r, rk, f, waktu, alr, hk_, dinamis, ctx), columns=["Item", "Nilai"])
         ring = pd.concat([ring, pd.DataFrame([("Alasan keputusan", a) for a in alasan], columns=["Item", "Nilai"]),
                           pd.DataFrame([("Disclaimer", DISCLAIMER)], columns=["Item", "Nilai"])])
         ring.to_excel(xw, sheet_name="Ringkasan", index=False)
@@ -274,7 +285,8 @@ def _fund_table(df: pd.DataFrame, mark: dict, kunci: str, lebar: float):
 
 
 def pdf_bytes(r, rk: dict | None, f: dict | None, waktu: str, ovn: dict | None = None, alr: dict | None = None,
-              b200: dict | None = None, hk_: dict | None = None, ritel: dict | None = None, dinamis: dict | None = None) -> bytes:
+              b200: dict | None = None, hk_: dict | None = None, ritel: dict | None = None, dinamis: dict | None = None,
+              ctx: dict | None = None) -> bytes:
     buf = io.BytesIO()
     doc = SimpleDocTemplate(buf, pagesize=A4, leftMargin=1.6 * cm, rightMargin=1.6 * cm, topMargin=1.4 * cm,
                             bottomMargin=1.4 * cm, title=f"Riset {r.params.kode}", author="Adimology Calculator")
@@ -285,7 +297,7 @@ def pdf_bytes(r, rk: dict | None, f: dict | None, waktu: str, ovn: dict | None =
     p = ParagraphStyle("p", parent=ss["BodyText"], fontSize=8.5, leading=11)
     small = ParagraphStyle("s", parent=p, fontSize=7, textColor=colors.HexColor("#6b7280"))
     nilai_ = bd.penilaian(r, alr, rk, dinamis)
-    kep, alasan = keputusan(r, rk, f, alr, nilai_, hk_)
+    kep, alasan = keputusan(r, rk, f, alr, nilai_, hk_, ctx)
     big = ParagraphStyle("k", parent=ss["Title"], fontSize=22, textColor=colors.white, alignment=TA_CENTER, leading=26)
 
     el = [Paragraph(_safe(f"Riset Saham {r.params.kode}" + (f" - {f['nama']}" if f and f.get("nama") else "")), h1),

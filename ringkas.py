@@ -18,6 +18,7 @@ import bandar as bd
 import dinamika as dn
 import hengky as hk
 import laporan as lp
+import konteks as ktx
 import ledger_calc as lgc
 
 HORIZON = (5, 10, 20)
@@ -592,10 +593,10 @@ def _audit_lines(r, rk, f, nilai, hk_, kep, alasan, ritel, b200) -> list[str]:
 
 
 def _baris(r, rk, f, waktu: str, ovn=None, alr=None, b200=None, hk_=None, nilai=None, vol=None, ritel=None,
-           status=None, snapshot=None, ledger=None) -> list[str]:
+           status=None, snapshot=None, ledger=None, ctx=None) -> list[str]:
     snapshot = snapshot or dt.datetime.now()
     nilai = nilai or bd.penilaian(r, alr, rk)
-    kep, alasan = lp.keputusan(r, rk, f, alr, nilai, hk_)
+    kep, alasan = lp.keputusan(r, rk, f, alr, nilai, hk_, ctx)
     pos = au.skenario_posisi(r, rk)
     val = au.validasi(r, rk, f, pos, snapshot)
     tp_p, sl_p = (rk["target"] / rk["harga"] - 1, rk["sl"] / rk["harga"] - 1) if rk else (None, None)
@@ -616,6 +617,7 @@ def _baris(r, rk, f, waktu: str, ovn=None, alr=None, b200=None, hk_=None, nilai=
     L += _bandar_lines(nilai.get("dinamis"))
     L += _data_lines(r, rk, f, ovn, alr, b200, hk_, nilai, vol, ritel, stat)
     L += _audit_lines(r, rk, f, nilai, hk_, kep, alasan, ritel, b200)
+    L += ktx.baris_laporan((ctx or {}).get('konteks'))
     L += lgc.baris_ai(ledger, r.params.kode)
     L.append("## BATASAN DATA & ENDPOINT")
     L += au.batasan(status or {}, r, rk, f, ovn, alr, b200, hk_, ritel)
