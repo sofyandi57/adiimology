@@ -160,6 +160,7 @@ class Params:
     fee_jual: float = 0.0025
     mode_bandar: str = "top1"                  # top1 = broker net beli terbesar; top3 = gabungan 3 akumulator teratas
     ob_multi: bool = False                     # lot per papan = median 3 snapshot historis (10:00/11:30/14:30)
+    ob_auto: bool = True                       # orderbook dangkal (pasar tutup) -> pakai 1 snapshot historis 10:30 hari bursa terakhir
 
 
 @dataclass
@@ -291,6 +292,15 @@ def orderbook_multi(client: InvezgoClient, kode: str, p: Params, tanggal: dt.dat
     return out
 
 
+def _ob_historis(client: InvezgoClient, kode: str, p: Params, tanggal: dt.date) -> dict | None:
+    """Satu snapshot orderbook historis 10:30 (cache menjaga biaya 1 panggilan). None bila gagal/dangkal."""
+    try:
+        ob = get_orderbook(client, kode, replace(p, ob_date=tanggal.isoformat(), ob_time="10:30"))
+    except AdimologyError:
+        return None
+    return dict(ob, jam="10:30") if ob and ob["n_levels"] > 4 else None
+
+
 def _wavg(v: pd.Series, w: pd.Series) -> float:
     m = v.notna() & w.notna() & (w > 0)
     return float((v[m] * w[m]).sum() / w[m].sum()) if m.any() else np.nan
@@ -385,6 +395,9 @@ def analyze(client: InvezgoClient, p: Params) -> Result:
         lpp = float(np.median([m["lot_per_papan"] for m in multi]))
         lpp_sumber = f"median {len(multi)} snapshot ({', '.join(m['jam'] for m in multi)} {tgl_akhir})"
         ob = ob or multi[-1]
+    elif ob and ob["n_levels"] <= 4 and p.ob_auto and not p.ob_date and tgl_akhir >= OB_HISTORIS_SEJAK and (ob_h := _ob_historis(client, kode, p, tgl_akhir)):
+        ob = ob_h
+        lpp, lpp_sumber = ob["lot_per_papan"], f"snapshot historis {tgl_akhir} 10:30 (pasar tutup, orderbook live hanya 1-2 level)"
     elif ob:
         lpp, lpp_sumber = ob["lot_per_papan"], "orderbook"
     else:

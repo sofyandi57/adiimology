@@ -68,6 +68,14 @@ def tampil(r, mode: str) -> None:
     else:
         st.warning("Rencana angka (entry/SL/target) tidak tersedia: analisa teknikal gagal atau data harga kurang.")
 
+    try:
+        val = au.validasi(r, rk, f, au.skenario_posisi(r, rk))
+    except Exception:
+        val = None
+    if val and val["status"] == "GAGAL":
+        st.error("**Validasi angka GAGAL, jangan dipakai:** " + " | ".join(c["detail"] for c in val["cek"] if c["status"] == "GAGAL"), icon="⛔")
+    elif val and val["n_peringatan"]:
+        st.caption("Peringatan validasi: " + " | ".join(c["detail"] for c in val["cek"] if c["status"] == "PERINGATAN")[:300])
     kf = konflik(rk, nilai, hk_, f, r)
     if kf:
         st.warning("**Sinyal tidak searah:** " + "; ".join(kf))

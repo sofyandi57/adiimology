@@ -1323,9 +1323,14 @@ if state and state[0] == "ok":
             m[1].metric("Total offer (lot)", fmt(o["total_offer"]))
             m[2].metric("Total papan", f"{o['papan']:,.1f}")
             m[3].metric("Lot per papan", fmt(o["lot_per_papan"]))
+            st.caption(f"Sumber lot per papan: **{r.lpp_sumber}**.")
             if o["n_levels"] <= 4:
-                st.warning("Orderbook hanya 1-2 level (umumnya saat pasar tutup). Gunakan snapshot historis atau "
-                           "'lot per papan manual', dan cek tab Sensitivitas.")
+                st.warning("Orderbook hanya 1-2 level: di luar jam bursa (hari libur / sebelum 09:00 / setelah 16:00) antrean ditarik, sehingga angka ini "
+                           "tidak mewakili antrean asli dan hanya memengaruhi skenario target Adimology (bukan keputusan utama). Aplikasi sudah mencoba "
+                           "snapshot historis 10:30 tetapi tidak tersedia/dangkal. Pilihan: jalankan saat jam bursa, pakai 'lot per papan manual', "
+                           "atau cek tab Sensitivitas.")
+            elif "snapshot historis" in r.lpp_sumber:
+                st.info("Pasar sedang tutup: antrean diambil dari snapshot historis 10:30 hari bursa terakhir (1 panggilan API).", icon="🕘")
             lv = pd.DataFrame([{"Sisi": "Offer", "Harga": k, "Lot": v} for k, v in sorted(o["offers"].items(), reverse=True)] +
                               [{"Sisi": "Bid", "Harga": k, "Lot": v} for k, v in sorted(o["bids"].items(), reverse=True)])
             st.dataframe(lv, hide_index=True, width="stretch")

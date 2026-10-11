@@ -62,10 +62,11 @@ def validasi(r, rk: dict | None, f: dict | None, posisi: list[dict], waktu: dt.d
     if rk and r.harga and abs(rk["harga"] / r.harga - 1) > 0.01:
         cek.append(_c("harga_konsisten", "PERINGATAN", f"harga Adimology {r.harga:,.0f} vs harga teknikal {rk['harga']:,.0f}: sumber/tanggal berbeda"))
     if rk:
-        e = (rk["entry_lo"] + rk["entry_hi"]) / 2 if rk["zona_valid"] else rk["harga"]
+        # basis entry SAMA dengan teknikal.rekomendasi: titik tengah zona bila ada zona valid, selain itu batas bawah zona (support)
+        e = (rk["entry_lo"] + rk["entry_hi"]) / 2 if rk["zona_valid"] else rk["entry_lo"]
         urut = rk["sl"] < min(e, rk["harga"]) and e < rk["tp1"] <= rk["tp2"]
         cek.append(_c("urutan_level", "OK" if urut else "GAGAL" if not (rk["sl"] < e) else "PERINGATAN",
-                      f"SL {rk['sl']:,.0f} < entry {e:,.0f} < TP1 {rk['tp1']:,.0f} <= TP2 {rk['tp2']:,.0f}"
+                      f"SL {rk['sl']:,.0f} < entry {e:,.0f}{'' if rk['zona_valid'] else ' (support; belum ada zona beli valid)'} < TP1 {rk['tp1']:,.0f} <= TP2 {rk['tp2']:,.0f}"
                       + ("" if urut else "; harga kini di atas TP1/entry di luar urutan")))
         rr = (rk["target"] - e) / max(e - rk["sl"], 1e-9)
         cek.append(_c("rr_rekonsiliasi", "OK" if abs(rr - rk["rr"]) < 0.01 else "GAGAL", f"RR dihitung ulang {rr:.2f} vs laporan {rk['rr']:.2f}"))
