@@ -20,9 +20,10 @@ Target harga metode Adimology dari data **broker summary + orderbook Invezgo**. 
 - `rapor.py`: evaluasi mekanis keputusan masa lalu (TP1/SL, interval Wilson)
 - `keputusan_ui.py`: kartu keputusan tunggal (BELI/TUNGGU/HINDARI-JUAL) di tab Keputusan
 - `ledger.py`: buku besar broker harian di database (respons mentah terpisah, upsert idempoten, backfill bertahap, rekonsiliasi, log API, validasi data)
+- `ledger_score.py`: lapisan turunan & sinyal ledger (rolling 1D/5D/20D/60D/120D/YTD per sesi, Bandar Score 0-10, status episode, sinyal teraudit + versi formula)
 - `ledger_calc.py`: episode akumulasi, biaya rata-rata (proksi), posisi tersisa (skenario NET_FLOW_PROXY), status, zona distribusi, peringatan
 - `ledger_ui.py`: tab Ledger Broker
-- `tests/`: 138 tes (ledger broker, (kerangka bukti bandar, audit, fundamental FY/LTM, minat ritel, ringkasan TXT, Hengky, bandar jangka panjang, penilaian bandar, backtest, login, aliran, teknikal, BPJP/BSJP, fundamental, ekspor, rumus, fraksi bertingkat, kasus MCAS sama dengan output Colab, UI smoke test)
+- `tests/`: 141 tes (ledger broker, (kerangka bukti bandar, audit, fundamental FY/LTM, minat ritel, ringkasan TXT, Hengky, bandar jangka panjang, penilaian bandar, backtest, login, aliran, teknikal, BPJP/BSJP, fundamental, ekspor, rumus, fraksi bertingkat, kasus MCAS sama dengan output Colab, UI smoke test)
 
 ## Jalankan lokal
 ```bash

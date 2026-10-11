@@ -933,10 +933,18 @@ if submitted:
             hk_s = (st.session_state.get("hengky") or (None, None))[1] if (st.session_state.get("hengky") or (None,))[0] == "ok" else None
             led_ = None
             try:   # ledger dibaca dari database (tanpa API); kosong -> bagian N/A di laporan
-                import ledger as lg_, ledger_calc as lc_, ledger_ui as lu_
-                b_l, m_l = lg_.muat(lu_._engine()[0], r0.params.kode, 60)
+                import ledger as lg_, ledger_calc as lc_, ledger_score as ls_, ledger_ui as lu_
+                eng_l = lu_._engine()[0]
+                if lengkap:       # ledger yang sudah ada disinkronkan inkremental (hanya sesi baru, maks 5 panggilan); ledger kosong tidak di-backfill otomatis
+                    try:
+                        lg_.sinkron_inkremental(apicache.DbClient(key, eng_l), eng_l, r0.params.kode, max_calls=5)
+                    except Exception:
+                        pass
+                b_l, m_l = lg_.muat(eng_l, r0.params.kode, lg_.SESI_DEFAULT)
                 if not b_l.empty and not m_l.empty:
-                    led_ = lc_.jalankan(b_l, m_l, lc_.Cfg(), lg_.log_api(lu_._engine()[0], r0.params.kode))
+                    led_ = lc_.jalankan(b_l, m_l, lc_.Cfg(), lg_.log_api(eng_l, r0.params.kode))
+                    if led_.get("ok"):
+                        led_["sinyal"], _ = ls_.hitung_dan_simpan(eng_l, led_, lg_.muat_meta(eng_l, r0.params.kode))
             except Exception:
                 led_ = None
             exp["csv"] = __import__("ledger_calc").csv_ai(led_)

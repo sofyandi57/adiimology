@@ -198,14 +198,17 @@ def test_ui_tab_ledger(tmp_path, monkeypatch):
     [b for b in at.button if b.label == "⚡ Hitung cepat"][0].click().run()
     assert not at.exception, [e.value for e in at.exception]
     md = " ".join([m.value for m in at.markdown] + [m.value for m in at.subheader])
-    assert "Ledger Broker" in md and "Cakupan" in md and "Estimasi posisi" in md
+    assert "Ledger Broker" in md and "Cakupan" in md and "Estimasi posisi" in md and "Bandar Score" in md
     assert any("NET_FLOW_PROXY" in str(c.value) for c in at.caption) or "NET_FLOW_PROXY" in md
 
 
 def test_ekspor_ai_txt_md_csv(hasil):
     import datetime as dt2
+    import ledger_score as ls
+    hasil["sinyal"] = ls.hitung(hasil, None)
     L = lc.baris_ai(hasil, "TST")
     t = "\n".join(L)
+    assert "Bandar Score ledger" in t and "Bukti berlawanan" in t
     assert "## LEDGER BROKER" in t and "NET_FLOW_PROXY" in t and "Zona distribusi" in t
     import ringkas as rg
     md = "\n".join(rg._md_dari_baris(L))
@@ -251,3 +254,50 @@ def test_simpan_chart_mengisi_pasar(eng):
     assert lg.simpan_chart(eng, "TST", raw, NOW) == len(HARI)
     _, m = lg.muat(eng, "TST")
     assert len(m) == len(HARI)
+
+
+def test_rolling_dan_skor(eng):
+    import ledger_score as ls
+    c = Fake()
+    lg.perbarui(c, eng, "TST", hari_bursa=70, max_calls=100, now=NOW, jeda=0)
+    b, m = lg.muat(eng, "TST")
+    res = lc.jalankan(b, m, lc.Cfg(), lg.log_api(eng), NOW)
+    L = res["ledger"]
+    M = ls.pasar_harian(L)
+    assert len(M) == len(HARI) and (M["volume_lots"] == 10_000).all()              # volume pasar SEKALI per tanggal (1.000.000 lembar = 10.000 lot)
+    R = ls.rolling_broker(L)
+    aa = R[R.broker_code == "AA"].set_index("trade_date")
+    d = HARI[-1]
+    exp5 = sum((r["buy_volume"] - r["sell_volume"]) / 100 for dd in HARI[-5:] for r in c.daily[dd] if r["code"] == "AA")
+    assert aa.loc[d, "net_lots_5d"] == exp5 and aa.loc[d, "net_lots_1d"] == (c.daily[d][0]["buy_volume"] - c.daily[d][0]["sell_volume"]) / 100
+    assert aa.loc[d, "net_sell_streak"] >= 3 and aa.loc[d, "net_lots_20d"] < 0
+    s, baru = ls.hitung_dan_simpan(eng, res, lg.muat_meta(eng, "TST"))
+    assert baru and s["episode_status"] in (ls.ST_DIST, ls.ST_MARKDOWN, ls.ST_MIXED) and s["formula_version"] == ls.CALC_VERSION
+    assert s["supporting_evidence"] is not None and s["contradicting_evidence"] and len(s["score_components"]) == 5
+    assert all(0 <= x["poin"] <= x["maks"] for x in s["score_components"]) and 0 <= s["bandar_score"] <= 10
+    s2, baru2 = ls.hitung_dan_simpan(eng, res, lg.muat_meta(eng, "TST"))          # input sama -> tidak dihitung ulang
+    assert not baru2 and s2["bandar_score"] == s["bandar_score"]
+    assert "Dimensi | Poin" in "\n".join(ls.baris(s))
+
+
+def test_meta_200_sesi_dan_inkremental(eng):
+    c = Fake()
+    lg.perbarui(c, eng, "TST", hari_bursa=30, max_calls=100, now=NOW, jeda=0)
+    m = lg.muat_meta(eng, "TST")
+    assert m["sessions_loaded"] == 30 and m["target_sessions"] == 30 and m["history_complete"] and m["last_available_trade_date"] == HARI[-1]
+    lg.perbarui(c, eng, "TST", hari_bursa=200, max_calls=0, now=NOW, jeda=0)     # target 200 sesi, hanya 70 sesi tersedia di pasar
+    m = lg.muat_meta(eng, "TST")
+    assert m["target_sessions"] == 200 and not m["history_complete"] and m["market_sessions"] == len(HARI)
+    n0 = c.calls
+    r = lg.sinkron_inkremental(c, eng, "TST", max_calls=5, now=NOW)               # tidak ada sesi baru -> hanya panggilan chart
+    assert r["diambil"] == 0 and c.calls == n0 + 1
+    assert lg.sinkron_inkremental(c, eng, "KOSONG", 5, NOW) is None               # ledger kosong: tidak ada backfill otomatis
+
+
+def test_sesi_hilang_bukan_nol_buatan(eng):
+    c = Fake()
+    lg.perbarui(c, eng, "TST", hari_bursa=10, max_calls=100, now=NOW, jeda=0)
+    b, m = lg.muat(eng, "TST")
+    b = b[b.trade_date != HARI[-4]]
+    L = lc.bangun(b, m, lc.Cfg())
+    assert HARI[-4] not in set(L.trade_date) and L.trade_date.nunique() == 9

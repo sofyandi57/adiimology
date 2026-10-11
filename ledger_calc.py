@@ -45,6 +45,9 @@ def bangun(b: pd.DataFrame, m: pd.DataFrame, cfg: Cfg | None = None) -> pd.DataF
         return pd.DataFrame()
     bx = lg.tandai_crossing(b, m)
     mm = m.sort_values("trade_date").reset_index(drop=True)
+    mm = mm[mm["trade_date"].isin(set(b["trade_date"]))].reset_index(drop=True)      # hanya sesi yang BENAR-BENAR termuat: tidak ada nol buatan untuk sesi hilang
+    if mm.empty:
+        return pd.DataFrame()
     tgl = mm["trade_date"].tolist()
     base = pd.DataFrame({"trade_date": tgl, "close_price": mm["close"].to_numpy(), "volume_lots": mm["volume_shares"].to_numpy() / LOT})
     kode = bx["ticker"].iloc[0]
@@ -61,6 +64,8 @@ def bangun(b: pd.DataFrame, m: pd.DataFrame, cfg: Cfg | None = None) -> pd.DataF
         d["broker_code"] = br
         d["ticker"] = kode
         d["is_final"] = d["trade_date"].map(g["is_final"]).fillna(True).astype(bool)
+        d["missing_data_flag"] = ~d["trade_date"].isin(g.index)          # True = broker tidak punya baris sumber di sesi itu (tidak aktif; BUKAN tanggal hilang)
+        d["source_timestamp"] = d["trade_date"].map(g["retrieved_at"]) if "retrieved_at" in g else pd.NaT
         rows.append(d)
     L = pd.concat(rows, ignore_index=True)
     L["buy_lots"], L["sell_lots"] = L["buy_shares"] / LOT, L["sell_shares"] / LOT
@@ -339,7 +344,12 @@ def csv_ledger(res: dict) -> bytes:
     cols = ["trade_date", "ticker", "broker_code", "broker_name", "buy_lots", "sell_lots", "net_lots", "buy_value", "sell_value", "net_value", "avg_buy_price",
             "avg_sell_price", "close_price", "volume_lots", "crossing", "cumulative_net_lots", "estimated_position_lots_low", "estimated_avg_cost_proxy",
             "flow_status_akhir", "confidence_akhir", "is_final"]
-    return res["ledger"][cols].to_csv(index=False).encode("utf-8")
+    out = res["ledger"][cols + ["missing_data_flag", "source_timestamp"]].copy()
+    out["data_status"] = np.where(out.pop("is_final"), "FINAL", "PARTIAL")
+    out["duplicate_flag"] = False                                        # kunci unik di database: duplikat tidak mungkin tersimpan
+    out["source_version"] = lg.SOURCE_VERSION
+    out["calculation_version"] = __import__("ledger_score").CALC_VERSION
+    return out.to_csv(index=False).encode("utf-8")
 
 
 # ----------------------------------------------------------------------- jawaban
@@ -435,6 +445,10 @@ def baris_ai(res: dict | None, kode: str) -> list[str]:
     L.append(f"[OBS] jendela {res['tgl_awal']}..{res['tgl_akhir']}; {val['cakupan']['hari']} hari; {val['cakupan']['n_broker']} broker; validasi {val['status']}"
              + (f" (masalah: {', '.join(c['id'] for c in val['cek'] if c['status'] != 'OK')})" if val["status"] != "OK" else ""))
     L.append("PERINGATAN METODE: broker=perantara banyak nasabah; biaya & posisi = NET_FLOW_PROXY (bukan posisi/harga pokok aktual); bukan identitas 'bandar'; net positif saja tidak cukup untuk ACCUMULATION.")
+    sg = res.get("sinyal")
+    if sg is not None:
+        import ledger_score as ls_
+        L += ls_.baris(sg)
     j = jawaban(res, kode)
     for k, v in j["ringkasan"]:
         L.append(f"{k}: {v}")

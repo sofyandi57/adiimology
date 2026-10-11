@@ -22,7 +22,10 @@ import adimology as ad
 import teknikal as tk
 
 SHARES_PER_LOT = 100
+LOT_TOL = 100                         # toleransi selisih beli-jual vs net sumber (1 lot = 100 lembar)
 SUMBER = "invezgo_summary_daily"
+SESI_DEFAULT = 200                    # default riwayat = 200 SESI BURSA (bukan hari kalender)
+SOURCE_VERSION = "invezgo_summary_daily:v1"
 EP_SUMMARY = "/analysis/summary/stock"
 EP_CHART = "/analysis/chart/stock"
 WIB = ZoneInfo("Asia/Jakarta")
@@ -44,6 +47,19 @@ T_MARKET = sa.Table(
     "ledger_market_daily", META, sa.Column("ticker", sa.String(10), primary_key=True), sa.Column("trade_date", sa.Date, primary_key=True),
     sa.Column("data_source", sa.String(40), primary_key=True), sa.Column("open", sa.Float), sa.Column("high", sa.Float), sa.Column("low", sa.Float),
     sa.Column("close", sa.Float), sa.Column("volume_shares", sa.Float), sa.Column("retrieved_at", sa.DateTime))
+T_META = sa.Table(
+    "ledger_meta", META, sa.Column("ticker", sa.String(10), primary_key=True), sa.Column("first_available_trade_date", sa.Date),
+    sa.Column("last_available_trade_date", sa.Date), sa.Column("sessions_loaded", sa.Integer), sa.Column("target_sessions", sa.Integer),
+    sa.Column("market_sessions", sa.Integer), sa.Column("history_complete", sa.Boolean), sa.Column("last_successful_sync", sa.DateTime),
+    sa.Column("source_version", sa.String(60)))
+T_DERIVED = sa.Table(
+    "ledger_derived", META, sa.Column("ticker", sa.String(10), primary_key=True), sa.Column("as_of_date", sa.Date, primary_key=True),
+    sa.Column("broker_code", sa.String(4), primary_key=True), sa.Column("calc_version", sa.String(30), primary_key=True),
+    sa.Column("computed_at", sa.DateTime), sa.Column("metrics", sa.Text))
+T_SIGNAL = sa.Table(
+    "ledger_signal", META, sa.Column("ticker", sa.String(10), primary_key=True), sa.Column("signal_date", sa.Date, primary_key=True),
+    sa.Column("calc_version", sa.String(30), primary_key=True), sa.Column("computed_at", sa.DateTime), sa.Column("fingerprint", sa.String(80)),
+    sa.Column("bandar_score", sa.Float), sa.Column("episode_status", sa.String(24)), sa.Column("confidence_score", sa.Float), sa.Column("payload", sa.Text))
 T_LOG = sa.Table(
     "ledger_api_log", META, sa.Column("id", sa.Integer, primary_key=True, autoincrement=True), sa.Column("ts", sa.DateTime), sa.Column("ticker", sa.String(10)),
     sa.Column("endpoint", sa.String(80)), sa.Column("params", sa.String(160)), sa.Column("status", sa.String(10)), sa.Column("n_rows", sa.Integer),
@@ -168,8 +184,8 @@ def ambil_pasar(client, eng, kode: str, hari_kalender: int = 450, now: dt.dateti
     return df
 
 
-def perbarui(client, eng, kode: str, hari_bursa: int = 60, max_calls: int = 60, now: dt.datetime | None = None, jeda: float = 0.1,
-             progress=None) -> dict:
+def perbarui(client, eng, kode: str, hari_bursa: int = SESI_DEFAULT, max_calls: int = 60, now: dt.datetime | None = None, jeda: float = 0.1,
+             progress=None, hanya_baru: bool = False) -> dict:
     """Backfill sekali + inkremental: hanya tanggal yang belum final yang diambil. Terbaru dulu; dapat dilanjutkan bila max_calls tercapai."""
     kode = kode.strip().upper()
     pasar = ambil_pasar(client, eng, kode, now=now)
@@ -177,7 +193,11 @@ def perbarui(client, eng, kode: str, hari_bursa: int = 60, max_calls: int = 60, 
     with eng.connect() as c:
         final_ada = {r[0] for r in c.execute(sa.select(T_RAW.c.trade_date).where(sa.and_(
             T_RAW.c.ticker == kode, T_RAW.c.endpoint == EP_SUMMARY, T_RAW.c.is_final == True)))}  # noqa: E712
-    perlu = [d for d in reversed(tgl) if d not in final_ada]
+    if hanya_baru and final_ada:              # sinkron inkremental: hanya sesi SESUDAH data final terakhir
+        terakhir = max(final_ada)
+        perlu = [d for d in reversed(tgl) if d > terakhir]
+    else:
+        perlu = [d for d in reversed(tgl) if d not in final_ada]
     hasil = dict(kode=kode, total=len(tgl), sudah=len(tgl) - len(perlu), diambil=0, gagal=[], tersisa=0, kosong=[])
     for i, d in enumerate(perlu):
         if hasil["diambil"] >= max_calls:
@@ -193,7 +213,43 @@ def perbarui(client, eng, kode: str, hari_bursa: int = 60, max_calls: int = 60, 
         if progress:
             progress(i + 1, len(perlu), d)
         time.sleep(jeda)
+    try:
+        hasil["meta"] = catat_meta(eng, kode, hari_bursa, sukses=not hasil["gagal"], now=now)
+    except Exception:
+        pass
     return hasil
+
+
+def catat_meta(eng, kode: str, target: int = SESI_DEFAULT, sukses: bool = True, now: dt.datetime | None = None) -> dict:
+    """Cakupan riwayat per ticker: sesi termuat (final), tanggal pertama/terakhir, history_complete. Tidak mengisi tanggal yang hilang."""
+    kode = kode.strip().upper()
+    with eng.connect() as c:
+        pasar = sorted(r[0] for r in c.execute(sa.select(T_MARKET.c.trade_date).where(T_MARKET.c.ticker == kode)))
+        final = {r[0] for r in c.execute(sa.select(T_RAW.c.trade_date).where(sa.and_(
+            T_RAW.c.ticker == kode, T_RAW.c.endpoint == EP_SUMMARY, T_RAW.c.is_final == True)))}  # noqa: E712
+        lama = c.execute(sa.select(T_META.c.last_successful_sync).where(T_META.c.ticker == kode)).scalar()
+    jendela = pasar[-target:]
+    muat_ = sorted(d for d in jendela if d in final)
+    row = dict(ticker=kode, first_available_trade_date=muat_[0] if muat_ else None, last_available_trade_date=muat_[-1] if muat_ else None,
+               sessions_loaded=len(muat_), target_sessions=target, market_sessions=len(pasar), history_complete=bool(len(muat_) >= target),
+               last_successful_sync=(_utc_naive(now) if sukses else lama), source_version=SOURCE_VERSION)
+    with eng.begin() as c:
+        upsert(c, T_META, [row], ["ticker"])
+    return row
+
+
+def muat_meta(eng, kode: str) -> dict | None:
+    with eng.connect() as c:
+        r = c.execute(sa.select(T_META).where(T_META.c.ticker == kode.strip().upper())).mappings().first()
+    return dict(r) if r else None
+
+
+def sinkron_inkremental(client, eng, kode: str, max_calls: int = 5, now: dt.datetime | None = None) -> dict | None:
+    """Ticker yang sudah punya ledger: ambil HANYA sesi baru (maks max_calls). Ledger kosong -> tidak melakukan apa pun (backfill harus disengaja)."""
+    m = muat_meta(eng, kode)
+    if not m or not m.get("sessions_loaded"):
+        return None
+    return perbarui(client, eng, kode, m.get("target_sessions") or SESI_DEFAULT, max_calls=max_calls, now=now, jeda=0.05, hanya_baru=True)
 
 
 def rekonsiliasi(client, eng, kode: str, n_hari: int = 3, now: dt.datetime | None = None) -> list[dict]:
@@ -274,6 +330,11 @@ def validasi(b: pd.DataFrame, m: pd.DataFrame, log: pd.DataFrame | None = None, 
     if tgl_pasar:
         lag = (n.astimezone(WIB).date() - max(tgl_ledger)).days
         add("kesegaran", "OK" if lag <= 4 else "PERINGATAN", f"data broker terakhir {max(tgl_ledger)} ({lag} hari sebelum sekarang)")
+    if "net_shares_raw" in b:
+        ada = b["net_shares_raw"].notna()
+        selisih = int((((b.loc[ada, "buy_shares"] - b.loc[ada, "sell_shares"]) - b.loc[ada, "net_shares_raw"]).abs() > LOT_TOL).sum())
+        add("net_konsisten", "OK" if selisih == 0 else "PERINGATAN", "beli - jual = net sumber di semua rekaman (toleransi 1 lot)" if selisih == 0 else
+            f"{selisih} rekaman dengan beli - jual != net sumber (toleransi 1 lot): net dihitung dari beli - jual, bukan dari field net sumber")
     inv = int(((b["buy_shares"] > 0) & (b["buy_value"] <= 0)).sum() + ((b["sell_shares"] > 0) & (b["sell_value"] <= 0)).sum() + ((b["buy_shares"] < 0) | (b["sell_shares"] < 0)).sum())
     add("nilai_tidak_valid", "OK" if inv == 0 else "GAGAL", f"{inv} rekaman volume>0 dengan nilai<=0 atau volume negatif")
     avg = (b["buy_value"] / b["buy_shares"].replace(0, np.nan))

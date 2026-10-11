@@ -11,6 +11,7 @@ import adimology as ad
 import apicache
 import ledger as lg
 import ledger_calc as lc
+import ledger_score as ls
 
 WARNA = {lc.ACC: "🟢", lc.DIST: "🔴", lc.MIXED: "🟡", lc.NEUTRAL: "⚪", lc.INSUF: "⚫"}
 
@@ -27,7 +28,7 @@ def ledger_url() -> str | None:
 
 
 @st.cache_resource(show_spinner=False)
-def _eng(url: str, versi: int = 2):      # naikkan versi bila ada tabel baru (cache resource bertahan antar-deploy)
+def _eng(url: str, versi: int = 3):      # naikkan versi bila ada tabel baru (cache resource bertahan antar-deploy)
     return apicache.siapkan(lg.engine(url))
 
 
@@ -52,11 +53,19 @@ def tampil(kode: str, api_key: str | None) -> None:
     if not persisten:
         st.warning("Database persisten belum diatur: ledger memakai file lokal sementara yang HILANG saat aplikasi di-restart/redeploy. "
                    "Isi `[connections.ledger] url` (atau pakai `[connections.histori]`) di Secrets.")
-    st.caption("Hemat kuota: hari yang sudah final di ledger TIDAK diambil lagi, dan Hitung memakai ledger (0 panggilan) untuk rentang yang seluruh harinya sudah tersimpan. "
-               "Mulai 20 hari; tambah bertahap bila perlu.")
+    meta = lg.muat_meta(eng, kode)
+    if meta and meta.get("sessions_loaded"):
+        sisa = max(int(meta.get("target_sessions") or lg.SESI_DEFAULT) - int(meta["sessions_loaded"]), 0)
+        st.markdown(f"**Cakupan riwayat:** {meta['sessions_loaded']}/{meta['target_sessions']} sesi · {meta['first_available_trade_date']} → {meta['last_available_trade_date']} · "
+                    f"history_complete={'ya' if meta['history_complete'] else 'TIDAK'} · sinkron terakhir {str(meta.get('last_successful_sync') or '-')[:16]} UTC")
+        st.caption(f"Sisa ≈ {sisa} panggilan API untuk melengkapi target (bila pasar menyediakan sesi sebanyak itu; saham baru IPO punya riwayat lebih pendek). "
+                   "Pembaruan harian hanya mengambil sesi baru.")
+    else:
+        st.caption("Ledger saham ini kosong. Klik **Perbarui / backfill**: pertama kali ≈ 1 panggilan per sesi (≤ target), dilakukan bertahap sesuai batas per klik. "
+                   "Setelah itu pembaruan hanya sesi baru, dan **Hitung** memakai ledger tanpa panggilan API.")
     c1, c2, c3, c4 = st.columns([1, 1, 1, 1])
-    hari = c1.number_input("Hari bursa dimuat", 20, 250, 20, step=10, help="Jendela data. Batas harian dasar: 1 panggilan API per hari bursa yang belum final.")
-    mx = c2.number_input("Maks panggilan API / klik", 5, 200, 25, step=5, help="Menjaga kuota/rate limit. Klik lagi untuk melanjutkan backfill.")
+    hari = c1.number_input("Sesi bursa dimuat (target)", 20, 250, 200, step=10, help="Default 200 SESI BURSA (bukan hari kalender). 1 panggilan API per sesi yang belum tersimpan; sesi final tidak diambil ulang.")
+    mx = c2.number_input("Maks panggilan API / klik", 5, 250, 60, step=5, help="Menjaga kuota/rate limit. Klik lagi untuk melanjutkan backfill.")
     upd = c3.button("⬇️ Perbarui / backfill", width="stretch", disabled=not api_key)
     rek = c4.button("🔁 Rekonsiliasi 3 hari", width="stretch", disabled=not api_key,
                     help="Ambil ulang 3 hari terakhir dan koreksi bila sumber merevisi data.")
@@ -107,6 +116,33 @@ def tampil(kode: str, api_key: str | None) -> None:
     if val["status"] == "GAGAL":
         st.error("Validasi GAGAL: status dibatasi ke INSUFFICIENT_DATA sampai data diperbaiki.")
 
+    sinyal, dihitung = ls.hitung_dan_simpan(eng, res, lg.muat_meta(eng, kode))
+    st.markdown("### Bandar Score (0–10)")
+    if sinyal.get("bandar_score") is None:
+        st.info(f"N/A · {sinyal['episode_status']}: {'; '.join(sinyal['confidence_reason'])}")
+    else:
+        sc = sinyal["bandar_score"]
+        box = st.success if sc >= 8 else st.info if sc >= 6 else st.warning if sc >= 4 else st.error
+        box(f"**{sc}/10 · {sinyal['label']}**  \nStatus episode: **{sinyal['episode_status']}** · confidence **{sinyal['confidence_score']}** ({'; '.join(sinyal['confidence_reason'])})  \n"
+            f"Observasi {sinyal['observation_start_date']} → {sinyal['observation_end_date']} · kelompok kunci: {', '.join(sinyal['key_brokers']) or '-'} · formula {sinyal['formula_version']}")
+        st.caption("Lapisan positioning/timing berbasis aturan, belum terbukti punya keunggulan, dan BUKAN identitas/niat pihak tertentu. Bobot maksimum dalam kerangka keputusan: 10%.")
+        cc1, cc2 = st.columns(2)
+        with cc1:
+            st.dataframe(pd.DataFrame(sinyal["score_components"]).rename(columns={"dimensi": "Dimensi", "poin": "Poin", "maks": "Maks", "detail": "Detail"}), hide_index=True, width="stretch")
+        with cc2:
+            st.markdown("**Bukti mendukung**\n" + "\n".join(f"- {x}" for x in sinyal["supporting_evidence"][:8]))
+            st.markdown("**Bukti berlawanan**\n" + "\n".join(f"- {x}" for x in sinyal["contradicting_evidence"][:8]))
+        st.caption("Sinyal disimpan di database (ledger_signal) dan hanya dihitung ulang bila data ledger atau konfigurasi berubah." + (" Dihitung ulang sekarang." if dihitung else " Memakai sinyal tersimpan."))
+    with st.expander("Rolling flow per broker (sesi bursa: 1D/5D/20D/60D/120D/YTD)"):
+        Rr = ls.rolling_broker(res["ledger"])
+        tl = Rr["trade_date"].max()
+        snap = Rr[Rr["trade_date"] == tl].copy()
+        snap["abs60"] = snap["net_lots_60d"].abs().fillna(snap["net_lots_5d"].abs())
+        tampil = snap.sort_values("abs60", ascending=False).head(15)[["broker_code", "net_lots_1d", "net_lots_5d", "net_lots_20d", "net_lots_60d", "net_lots_120d", "net_lots_ytd",
+                                                                       "net_flow_pct_volume_20d", "net_buy_days_20d", "net_sell_days_20d", "net_sell_streak"]]
+        st.caption(f"Per {tl}; jendela dihitung dari sesi bursa termuat (kosong = riwayat belum cukup). 1D = satu sesi. Top 15 berdasarkan |net 60D|.")
+        st.dataframe(tampil, hide_index=True, width="stretch", column_config={"net_flow_pct_volume_20d": st.column_config.NumberColumn(format="percent")})
+        st.download_button("⬇️ Unduh rolling snapshot (CSV)", snap.drop(columns=["abs60"]).to_csv(index=False).encode(), f"ledger_derived_{kode}_{tl}.csv", "text/csv")
     j = lc.jawaban(res, kode)
     st.markdown("### Ringkasan")
     st.table(pd.DataFrame(j["ringkasan"], columns=["Butir", "Isi"]).set_index("Butir"))
