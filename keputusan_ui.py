@@ -29,8 +29,10 @@ def status_modul() -> list[tuple[str, str]]:
 def konflik(rk, nilai, hk_, f, r) -> list[str]:
     k = []
     gate = bd.gate(nilai)
-    if rk and rk["verdict"] == "BELI DI AREA ENTRY" and gate != "kuat":
-        k.append("Teknikal di area beli, tetapi bukti bandarmologi belum cukup kuat")
+    if rk and rk["verdict"] == "BELI DI AREA ENTRY" and gate == "lain" and nilai["kategori"] not in lp._BANDAR_POSITIF:
+        k.append("Teknikal di area beli, tetapi tidak ada jejak akumulasi bandar")
+    if rk and rk["verdict"] == "BELI DI AREA ENTRY" and gate == "waspada":
+        k.append("Teknikal di area beli, tetapi ada jebakan bandar (lihat tab Bandar)")
     if rk and rk["verdict"] == "HINDARI" and gate == "kuat":
         k.append("Bandar terindikasi akumulasi, tetapi teknikal HINDARI (harga lemah/tembus SL)")
     if hk_ is not None and not hk_["checklist"]["lolos_inti"] and rk and rk["verdict"] == "BELI DI AREA ENTRY":
@@ -41,7 +43,7 @@ def konflik(rk, nilai, hk_, f, r) -> list[str]:
 
 
 def ctx_sesi(mode: str) -> dict:
-    return dict(mode=mode, konteks=st.session_state.get("konteks"))
+    return dict(mode=mode, konteks=st.session_state.get("konteks"), ledger=st.session_state.get("ledger_sinyal"))
 
 
 def hitung(r, mode: str):
@@ -56,6 +58,8 @@ def tampil(r, mode: str) -> None:
     kep, alasan, rk, f, alr, hk_, nilai = hitung(r, mode)
     box = {"BELI": st.success, "TUNGGU": st.warning}.get(kep, st.error)
     sub = " · ".join(a for a in alasan[:3])
+    if kep == "BELI":
+        sub = ("Bukti bandar KUAT (terkonfirmasi). " if bd.gate(nilai) == "kuat" else "Bukti bandar SEDANG (belum terkonfirmasi): posisi lebih kecil. ") + sub
     box(f"### {r.params.kode} → {kep}\n{sub}", icon={"BELI": "🟢", "TUNGGU": "🟡"}.get(kep, "🔴"))
     if mode == "cepat":
         st.caption("Mode **cepat**: keputusan sementara dari data dasar (harga, broker window, teknikal). Fundamental, dinamika bandar, Hengky, ritel belum dihitung.")

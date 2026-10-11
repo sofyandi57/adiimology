@@ -587,7 +587,7 @@ def _audit_lines(r, rk, f, nilai, hk_, kep, alasan, ritel, b200) -> list[str]:
     neg_ = [k for k, v in sinyal.items() if v < 0]
     L.append("sinyal: " + " ".join(f"{k}={'+' if v > 0 else '-' if v < 0 else '0'}" for k, v in sinyal.items()))
     L.append("konflik_sinyal=" + (f"positif {pos_} vs negatif {neg_}" if pos_ and neg_ else "tidak ada konflik tajam"))
-    L.append(f"alasan_keputusan_final={kep}: aturan = HINDARI bila ada jebakan/teknikal HINDARI/fundamental fatal; BELI hanya bila bandarmologi KUAT + teknikal di area beli + aturan inti Hengky terpenuhi; selain itu TUNGGU. "
+    L.append(f"alasan_keputusan_final={kep}: aturan (bandar = sensor risiko + penguat) = HINDARI bila bandar menjual/distribusi (veto, termasuk status ledger DISTRIBUTING/MARKDOWN) / teknikal HINDARI / fundamental fatal / ; BELI bila teknikal di area beli + aturan inti Hengky terpenuhi + ada jejak akumulasi (terkonfirmasi = bukti kuat, terindikasi/absorpsi = bukti sedang); jebakan non-distribusi, tidak konklusif, atau notasi khusus = TUNGGU. "
              "Satu sinyal positif (mis. Adimology) tidak cukup mengalahkan sinyal negatif." + (" Rincian: " + " | ".join(alasan[:4]) if alasan else ""))
     return L
 

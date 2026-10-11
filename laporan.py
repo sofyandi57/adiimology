@@ -49,6 +49,18 @@ def keputusan(r, rk: dict | None, f: dict | None, alr: dict | None = None,
               nilai: dict | None = None, hk_: dict | None = None, ctx: dict | None = None) -> tuple[str, list[str]]:
     """Keputusan dasar + batas dari konteks (ctx = {'mode': 'cepat'|'lengkap', 'konteks': hasil konteks.ambil}): satu sumber untuk UI, PDF, Excel, TXT, MD."""
     kep, alasan = _keputusan_dasar(r, rk, f, alr, nilai, hk_)
+    if ctx and ctx.get("ledger"):               # veto ledger: distribusi/markdown terdokumentasi pada riwayat broker harian
+        sg = ctx["ledger"]
+        st_ = sg.get("episode_status")
+        if st_ in ("DISTRIBUTING", "MARKDOWN") and kep != "HINDARI / JUAL":
+            if sg.get("confidence_score", 0) >= 0.6:
+                kep = "HINDARI / JUAL"
+                alasan.append(f"Ledger broker: status {st_} (skor {sg.get('bandar_score')}, confidence {sg.get('confidence_score')}) = veto, bandar sedang keluar")
+            elif kep == "BELI":
+                kep = "TUNGGU"
+                alasan.append(f"BELI ditahan: ledger broker menunjukkan {st_} (confidence rendah {sg.get('confidence_score')})")
+        elif sg.get("bandar_score") is not None and kep == "BELI":
+            alasan.append(f"Ledger broker: skor {sg['bandar_score']}/10, status {st_} (informasi pendukung, tidak mengubah vonis)")
     if ctx:
         import konteks as ktx
         kep, alasan = ktx.terapkan(kep, alasan, ctx.get("konteks"), ctx.get("mode", "lengkap"))
@@ -57,8 +69,9 @@ def keputusan(r, rk: dict | None, f: dict | None, alr: dict | None = None,
 
 def _keputusan_dasar(r, rk: dict | None, f: dict | None, alr: dict | None = None,
                      nilai: dict | None = None, hk_: dict | None = None) -> tuple[str, list[str]]:
-    """BELI hanya bila bukti bandarmologi searah (AKUMULASI KUAT) DAN teknikal di area beli; jebakan atau
-    fundamental fatal = HINDARI / JUAL. Target Adimology hanya skenario (belum terbukti backtest)."""
+    """Bandar = SENSOR RISIKO + penguat, bukan syarat tunggal: HINDARI bila bandar menjual/distribusi (veto), fundamental fatal, atau teknikal HINDARI;
+    BELI bila teknikal di area beli + aturan inti Hengky lolos + ada jejak akumulasi (terkonfirmasi = kuat; terindikasi/absorpsi = sedang);
+    jebakan non-distribusi hanya menahan (TUNGGU). Target Adimology hanya skenario (belum terbukti backtest)."""
     nilai = nilai or bd.penilaian(r, alr, rk)
     alasan = [f"Bandarmologi: {nilai['kategori']}" + (f" (tingkat bukti: {nilai['tingkat']})" if nilai.get("tingkat") else
                                                        f" (skor {nilai['skor']:+d} dari {nilai['skor_maks']} kriteria terukur)")]
@@ -76,18 +89,43 @@ def _keputusan_dasar(r, rk: dict | None, f: dict | None, alr: dict | None = None
         alasan.append(f"Fundamental: tidak ada tanda bahaya besar ({len(f.get('peringatan', []))} catatan kuning)")
     alasan.append(f"Skenario Adimology: {r.verdict} (bukan dasar keputusan; belum terbukti di backtest)")
 
-    if fatal or bd.gate(nilai) == "waspada" or (rk and rk["verdict"] == "HINDARI"):
+    kat = nilai["kategori"]
+    berat = kat.startswith("DISTRIBUSI") or _jebakan_berat(nilai)
+    if fatal or berat or (rk and rk["verdict"] == "HINDARI"):
+        if berat and not fatal and not (rk and rk["verdict"] == "HINDARI"):
+            alasan.append("HINDARI karena bandar menunjukkan distribusi/penjualan (veto): " + ("; ".join(j for j in nilai["jebakan"] if _berat_txt(j))[:200] or kat))
         return "HINDARI / JUAL", alasan
     if hk_ is not None:
         alasan.append(f"Aturan Hengky: {hk_['checklist']['hasil']}")
-    if bd.gate(nilai) == "kuat" and rk and rk["verdict"] == "BELI DI AREA ENTRY":
+    gate = bd.gate(nilai)
+    if gate == "waspada":                       # jebakan ringan (mis. harga sudah dikejar): tahan, bukan hindari
+        alasan.append("TUNGGU: ada jebakan non-distribusi (lihat 'Jebakan'); tidak cukup untuk HINDARI tetapi menahan BELI")
+        return "TUNGGU", alasan
+    if rk and rk["verdict"] == "BELI DI AREA ENTRY":
         if hk_ is not None and not hk_["checklist"]["lolos_inti"]:
             alasan.append("BELI ditahan: aturan inti Hengky belum terpenuhi (uptrend, likuid, level, level pembatal)")
             return "TUNGGU", alasan
-        return "BELI", alasan
-    if rk and rk["verdict"] == "BELI DI AREA ENTRY":
-        alasan.append("BELI ditahan: bukti bandarmologi belum cukup (perlu AKUMULASI TERKONFIRMASI oleh perilaku harga)")
+        if kat in _BANDAR_POSITIF:
+            if gate == "kuat":
+                alasan.append("Bukti bandar: TERKONFIRMASI oleh perilaku harga (BELI dengan bukti bandar kuat)")
+            else:
+                alasan.append(f"Bukti bandar: {kat} - BELUM terkonfirmasi (BELI dengan bukti bandar sedang; ukuran posisi sebaiknya lebih kecil)")
+            return "BELI", alasan
+        alasan.append(f"BELI ditahan: bandar '{kat}' = tidak ada jejak akumulasi sama sekali; tidak ada alasan memihak saham ini")
     return "TUNGGU", alasan
+
+
+_BANDAR_POSITIF = ("AKUMULASI KUAT", "AKUMULASI TERKONFIRMASI (perilaku harga)", "AKUMULASI TERINDIKASI", "ABSORPSI SUPPLY")
+
+
+def _berat_txt(j: str) -> bool:
+    t = j.lower()
+    return "menjual" in t or "distribusi" in t
+
+
+def _jebakan_berat(nilai: dict) -> bool:
+    """Jebakan yang menandakan penjualan/distribusi bandar (veto). Jebakan lain (harga dikejar, volume tanpa penambahan barang) hanya menahan BELI."""
+    return any(_berat_txt(j) for j in nilai.get("jebakan", []))
 
 
 # --------------------------------------------------------------------- helpers

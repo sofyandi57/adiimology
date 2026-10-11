@@ -669,7 +669,7 @@ konklusif, dengan bukti mendukung, menentang, keyakinan, dan kondisi pembatalan.
   (distribusi terselubung, bandar jual di nego, volume spike tanpa akumulasi, harga sudah dikejar, fase distribusi)
   = WASPADA.
 - **Target Adimology adalah skenario**, bukan prediksi: di backtest tidak lebih baik dari beli acak.
-- Keputusan di PDF: BELI hanya bila AKUMULASI KUAT **dan** teknikal di area beli.
+- Keputusan: bandar = **sensor risiko + penguat**. HINDARI bila bandar menjual/distribusi (veto), fundamental fatal, atau teknikal HINDARI. BELI bila teknikal di area beli + aturan inti Hengky lolos + ada jejak akumulasi (terkonfirmasi = kuat, terindikasi/absorpsi = sedang, posisi lebih kecil). Jebakan ringan, tidak konklusif, atau notasi khusus = TUNGGU.
 
 **Validasi laporan**: TXT memuat STATUS_VALIDASI (rekonsiliasi angka posisi/RR, kesegaran data, kelengkapan fundamental); bila GAGAL,
 jangan dipakai. Kalkulator posisi memakai SATU fungsi dan stop yang sama dengan SL yang ditampilkan.
@@ -820,6 +820,7 @@ params = ad.Params(
 if submitted:
     st.session_state["mode"] = "lengkap" if lengkap else "cepat"
     st.session_state.pop("konteks", None)
+    st.session_state.pop("ledger_sinyal", None)
     st.session_state.pop("tek", None)
     st.session_state.pop("fund", None)
     st.session_state.pop("export", None)
@@ -947,6 +948,7 @@ if submitted:
                         led_["sinyal"], _ = ls_.hitung_dan_simpan(eng_l, led_, lg_.muat_meta(eng_l, r0.params.kode))
             except Exception:
                 led_ = None
+            st.session_state["ledger_sinyal"] = (led_ or {}).get("sinyal") if led_ else None
             exp["csv"] = __import__("ledger_calc").csv_ai(led_)
             with st.spinner("Menyiapkan dokumen ekspor..."):
                 for jenis, fn in (("xlsx", lp.excel_bytes), ("pdf", lp.pdf_bytes)):
