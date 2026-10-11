@@ -173,11 +173,60 @@ def histori_engine(url: str) -> sa.Engine:
     return eng
 
 
+HIST_SNAP = sa.Table(
+    "histori_snapshot", HIST_META,
+    sa.Column("id", sa.Integer, primary_key=True, autoincrement=True),
+    sa.Column("emiten", sa.String(10), nullable=False, index=True),
+    sa.Column("waktu", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("mode", sa.String(10)),
+    sa.Column("keputusan", sa.String(20)),
+    sa.Column("md", sa.LargeBinary),
+    sa.Column("txt", sa.LargeBinary))
+
+
+def simpan_snapshot(kode: str, waktu: dt.datetime, mode: str, kep: str, md: bytes | None, txt: bytes | None) -> None:
+    """Laporan lengkap (MD/TXT terkompresi) disimpan di database agar dapat dipanggil ulang dari tab Histori."""
+    import zlib
+    row = dict(emiten=kode, waktu=waktu, mode=mode, keputusan=kep, md=zlib.compress(md or b"", 6), txt=zlib.compress(txt or b"", 6))
+    url = histori_url()
+    if url:
+        try:
+            with histori_engine(url).begin() as c:
+                c.execute(HIST_SNAP.insert().values(**row))
+            return
+        except Exception as e:
+            st.session_state["_db_err"] = type(e).__name__
+    st.session_state.setdefault("snapshot", []).append(row)
+
+
+def daftar_snapshot(limit: int = 100) -> list[dict]:
+    rows = list(st.session_state.get("snapshot", []))[::-1]
+    url = histori_url()
+    if url:
+        try:
+            with histori_engine(url).connect() as c:
+                q = sa.select(HIST_SNAP.c.id, HIST_SNAP.c.emiten, HIST_SNAP.c.waktu, HIST_SNAP.c.mode, HIST_SNAP.c.keputusan).order_by(HIST_SNAP.c.id.desc()).limit(limit)
+                rows = [dict(m) for m in c.execute(q).mappings()] + rows
+        except Exception as e:
+            st.session_state["_db_err"] = type(e).__name__
+    return rows[:limit]
+
+
+def muat_snapshot(item: dict) -> dict:
+    import zlib
+    if "md" in item:
+        d = item
+    else:
+        with histori_engine(histori_url()).connect() as c:
+            d = dict(c.execute(sa.select(HIST_SNAP).where(HIST_SNAP.c.id == item["id"])).mappings().first())
+    return dict(md=zlib.decompress(d["md"] or zlib.compress(b"")), txt=zlib.decompress(d["txt"] or zlib.compress(b"")))
+
+
 def _num(x):
     return None if x is None or pd.isna(x) else float(x)
 
 
-def catat_histori(r: ad.Result) -> None:
+def catat_histori(r: ad.Result) -> dt.datetime:
     row = dict(emiten=r.params.kode, waktu=dt.datetime.now(dt.timezone.utc),
                target=_num(r.calc["t_real_r"]), stop_loss=_num(r.plan["sl"]), harga=_num(r.harga))
     url = histori_url()
@@ -186,10 +235,11 @@ def catat_histori(r: ad.Result) -> None:
             with histori_engine(url).begin() as c:
                 c.execute(HIST_TABLE.insert().values(**row))
             st.session_state.pop("_db_err", None)
-            return
+            return row["waktu"]
         except Exception as e:  # jangan sampai DB mematikan kalkulator
             st.session_state["_db_err"] = type(e).__name__
     st.session_state.setdefault("histori", []).append(row)
+    return row["waktu"]
 
 
 def load_histori(limit: int = 1000) -> pd.DataFrame:
@@ -216,10 +266,12 @@ def load_histori(limit: int = 1000) -> pd.DataFrame:
 
 def hapus_histori() -> None:
     st.session_state.pop("histori", None)
+    st.session_state.pop("snapshot", None)
     url = histori_url()
     if url:
         with histori_engine(url).begin() as c:
             c.execute(HIST_TABLE.delete())
+            c.execute(HIST_SNAP.delete())
 
 
 def ringkas(r: ad.Result) -> dict:
@@ -709,7 +761,7 @@ if submitted:
         try:
             with st.spinner(f"Mengambil data {kode} dari Invezgo..."):
                 st.session_state["res"] = ("ok", ad.analyze(CachedClient(key), params))
-            catat_histori(st.session_state["res"][1])
+            st.session_state["_hist_waktu"] = catat_histori(st.session_state["res"][1])
         except ad.AdimologyError as e:
             st.session_state["res"] = ("err", str(e))
         except Exception as e:  # jaga UI tetap hidup
@@ -819,6 +871,13 @@ if submitted:
                     except Exception as e:
                         exp[f"{jenis_}_err"] = f"{type(e).__name__}: {e}"
             st.session_state["export"] = exp
+            try:   # simpan laporan lengkap agar bisa dipanggil ulang dari tab Histori
+                import keputusan_ui
+                kep_s = keputusan_ui.hitung(r0, "lengkap" if lengkap else "cepat")[0]
+                simpan_snapshot(r0.params.kode, st.session_state.get("_hist_waktu") or dt.datetime.now(dt.timezone.utc),
+                                "lengkap" if lengkap else "cepat", kep_s, exp.get("md"), exp.get("txt"))
+            except Exception:
+                pass
 
 exp = st.session_state.get("export")
 if exp:
@@ -1270,6 +1329,24 @@ with tab_hist:
             hapus_histori()
             st.rerun()
         st.caption("Target Adimologi = target realistis. Menampilkan 1.000 catatan terbaru.")
+    snaps = daftar_snapshot()
+    if snaps:
+        st.markdown("#### 🗂️ Panggil ulang laporan sebelumnya")
+        def _lbl(x):
+            w = pd.Timestamp(x["waktu"])
+            w = (w.tz_localize("UTC") if w.tzinfo is None else w).tz_convert(ZoneInfo("Asia/Jakarta"))
+            return f"{x['emiten']} · {w:%Y-%m-%d %H:%M} WIB · {x['keputusan']} · {x['mode']}"
+        pil = st.selectbox("Pilih laporan", range(len(snaps)), format_func=lambda i: _lbl(snaps[i]))
+        try:
+            dd = muat_snapshot(snaps[pil])
+            st.caption(f"Laporan tersimpan apa adanya saat dihitung (tidak memanggil API). Keputusan saat itu: **{snaps[pil]['keputusan']}**.")
+            q1, q2 = st.columns(2)
+            q1.download_button("📝 Unduh Markdown", dd["md"], f"laporan_{snaps[pil]['emiten']}.md", "text/markdown", width="stretch")
+            q2.download_button("🧾 Unduh TXT", dd["txt"], f"laporan_{snaps[pil]['emiten']}.txt", "text/plain", width="stretch")
+            with st.expander("Pratinjau laporan"):
+                st.markdown(dd["md"].decode("utf-8", "ignore"))
+        except Exception as e:
+            st.error(f"Gagal memuat laporan: {type(e).__name__}")
 
 with tab_rumus:
     st.markdown("""

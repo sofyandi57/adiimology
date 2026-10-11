@@ -229,3 +229,20 @@ def test_kartu_keputusan_tampil(monkeypatch):
     assert not at.exception
     assert any(("→ TUNGGU" in x.value or "→ HINDARI" in x.value or "→ BELI" in x.value) for x in list(at.success) + list(at.warning) + list(at.error))
     assert {t.label for t in at.tabs} >= {"🎯 Keputusan", "📊 Teknikal & Rencana", "🏦 Bandar & Ledger", "📑 Fundamental", "🧰 Alat & Histori"}
+
+
+def test_histori_snapshot_recall(monkeypatch, tmp_path):
+    monkeypatch.setenv("HISTORI_DB_URL", f"sqlite:///{tmp_path / 'h.db'}")
+    _fake_api(monkeypatch)
+    at = open_app(monkeypatch)
+    [b for b in at.button if b.label == "Hitung lengkap"][0].click().run()
+    assert not at.exception, [e.value for e in at.exception]
+    at.run()
+    sel = [s for s in at.selectbox if s.label == "Pilih laporan"]
+    assert sel and "MCAS" in sel[0].options[0]
+    assert any("Panggil ulang" in m.value for m in at.markdown)
+    import sqlalchemy as sa
+    e = sa.create_engine(f"sqlite:///{tmp_path / 'h.db'}")
+    with e.connect() as c:
+        n, = c.execute(sa.text("select count(*) from histori_snapshot")).first()
+    assert n == 1

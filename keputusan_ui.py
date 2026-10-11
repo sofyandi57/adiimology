@@ -39,13 +39,19 @@ def konflik(rk, nilai, hk_, f, r) -> list[str]:
     return k
 
 
-def tampil(r, mode: str) -> None:
+def hitung(r, mode: str):
+    """(kep, alasan, rk, f, alr, hk_, nilai). Mode cepat tidak boleh menghasilkan BELI."""
     rk, f, alr, hk_ = _ok("tek"), _ok("fund"), _ok("aliran"), _ok("hengky")
     nilai = st.session_state.get("nilai") or bd.penilaian(r, alr, rk)
     kep, alasan = lp.keputusan(r, rk, f, alr, nilai, hk_)
     if mode == "cepat" and kep == "BELI":
         kep = "TUNGGU"
         alasan.append("BELI hanya dapat ditetapkan pada analisis LENGKAP (dinamika bandar & aturan Hengky belum dihitung)")
+    return kep, alasan, rk, f, alr, hk_, nilai
+
+
+def tampil(r, mode: str) -> None:
+    kep, alasan, rk, f, alr, hk_, nilai = hitung(r, mode)
     box = {"BELI": st.success, "TUNGGU": st.warning}.get(kep, st.error)
     sub = " · ".join(a for a in alasan[:3])
     box(f"### {r.params.kode} → {kep}\n{sub}", icon={"BELI": "🟢", "TUNGGU": "🟡"}.get(kep, "🔴"))
