@@ -246,3 +246,20 @@ def test_histori_snapshot_recall(monkeypatch, tmp_path):
     with e.connect() as c:
         n, = c.execute(sa.text("select count(*) from histori_snapshot")).first()
     assert n == 1
+
+
+def test_rapor_keputusan_tercatat_dan_evaluasi(monkeypatch, tmp_path):
+    monkeypatch.setenv("HISTORI_DB_URL", f"sqlite:///{tmp_path / 'h2.db'}")
+    _fake_api(monkeypatch)
+    at = open_app(monkeypatch)
+    [b for b in at.button if b.label == "Hitung lengkap"][0].click().run()
+    assert not at.exception, [e.value for e in at.exception]
+    import sqlalchemy as sa
+    e = sa.create_engine(f"sqlite:///{tmp_path / 'h2.db'}")
+    with e.connect() as c:
+        row = c.execute(sa.text("select emiten, keputusan, mode from histori_keputusan")).first()
+    assert row[0] == "MCAS" and row[1] in ("BELI", "TUNGGU", "HINDARI / JUAL") and row[2] == "lengkap"
+    at.run()
+    [b for b in at.button if b.label == "Evaluasi sekarang"][0].click().run()
+    assert not at.exception, [e.value for e in at.exception]
+    assert at.session_state["rapor"][0]["status"] in ("BELUM_ADA_DATA", "TANPA_ZONA")

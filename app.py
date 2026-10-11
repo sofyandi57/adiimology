@@ -199,7 +199,7 @@ def _sa_url(url: str) -> str:
 
 
 @st.cache_resource(show_spinner=False)
-def histori_engine(url: str, versi: int = 2) -> sa.Engine:     # naikkan versi bila ada tabel baru (cache resource bertahan antar-deploy)
+def histori_engine(url: str, versi: int = 3) -> sa.Engine:     # naikkan versi bila ada tabel baru (cache resource bertahan antar-deploy)
     eng = sa.create_engine(_sa_url(url), pool_pre_ping=True)
     HIST_META.create_all(eng)
     return eng
@@ -214,6 +214,46 @@ HIST_SNAP = sa.Table(
     sa.Column("keputusan", sa.String(20)),
     sa.Column("md", sa.LargeBinary),
     sa.Column("txt", sa.LargeBinary))
+
+
+HIST_KEP = sa.Table(
+    "histori_keputusan", HIST_META,
+    sa.Column("id", sa.Integer, primary_key=True, autoincrement=True),
+    sa.Column("emiten", sa.String(10), nullable=False, index=True),
+    sa.Column("waktu", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("mode", sa.String(10)),
+    sa.Column("keputusan", sa.String(20)),
+    sa.Column("tgl_data", sa.Date),
+    sa.Column("harga", sa.Float), sa.Column("entry_lo", sa.Float), sa.Column("entry_hi", sa.Float),
+    sa.Column("zona_valid", sa.Boolean), sa.Column("sl", sa.Float), sa.Column("tp1", sa.Float), sa.Column("tp2", sa.Float))
+
+
+def simpan_keputusan(kode: str, waktu: dt.datetime, mode: str, kep: str, r, rk: dict | None) -> None:
+    """Angka rencana saat keputusan dibuat, untuk dievaluasi kemudian (rapor keputusan)."""
+    row = dict(emiten=kode, waktu=waktu, mode=mode, keputusan=kep, tgl_data=r.tgl_akhir, harga=_num(r.harga),
+               entry_lo=_num(rk["entry_lo"]) if rk else None, entry_hi=_num(rk["entry_hi"]) if rk else None, zona_valid=bool(rk["zona_valid"]) if rk else False,
+               sl=_num(rk["sl"]) if rk else None, tp1=_num(rk["tp1"]) if rk else None, tp2=_num(rk["tp2"]) if rk else None)
+    url = histori_url()
+    if url:
+        try:
+            with histori_engine(url).begin() as c:
+                c.execute(HIST_KEP.insert().values(**row))
+            return
+        except Exception as e:
+            st.session_state["_db_err"] = type(e).__name__
+    st.session_state.setdefault("keputusan_log", []).append(row)
+
+
+def daftar_keputusan(limit: int = 500) -> list[dict]:
+    rows = list(st.session_state.get("keputusan_log", []))
+    url = histori_url()
+    if url:
+        try:
+            with histori_engine(url).connect() as c:
+                rows += [dict(m) for m in c.execute(sa.select(HIST_KEP).order_by(HIST_KEP.c.id.desc()).limit(limit)).mappings()]
+        except Exception as e:
+            st.session_state["_db_err"] = type(e).__name__
+    return rows
 
 
 def simpan_snapshot(kode: str, waktu: dt.datetime, mode: str, kep: str, md: bytes | None, txt: bytes | None) -> None:
@@ -299,11 +339,13 @@ def load_histori(limit: int = 1000) -> pd.DataFrame:
 def hapus_histori() -> None:
     st.session_state.pop("histori", None)
     st.session_state.pop("snapshot", None)
+    st.session_state.pop("keputusan_log", None)
     url = histori_url()
     if url:
         with histori_engine(url).begin() as c:
             c.execute(HIST_TABLE.delete())
             c.execute(HIST_SNAP.delete())
+            c.execute(HIST_KEP.delete())
 
 
 def ringkas(r: ad.Result) -> dict:
@@ -611,7 +653,7 @@ def ambil_aliran(client: ad.InvezgoClient, r: ad.Result) -> dict:
 
 
 PETUNJUK = """
-**Alur singkat:** isi kode saham (tidak ada kode bawaan) → **Hitung cepat** (±5 panggilan API; keputusan sementara) atau **Hitung lengkap** (semua modul). Tab **Keputusan** menampilkan satu aksi (BELI/TUNGGU/HINDARI-JUAL), angka entry/SL/target, syarat berubah, dan sinyal yang tidak searah. Tombol *Lengkapi analisis* menambah modul tanpa mengulang yang sudah ada. Setiap respons API disimpan di database (cache 7 hari untuk fundamental, permanen untuk data harian yang sudah final) dan kuota bulanan (30.000) ditampilkan di sidebar. Tab **Histori** menyimpan setiap hasil dan laporan lengkapnya (MD/TXT) untuk dipanggil ulang tanpa API.
+**Alur singkat:** isi kode saham (tidak ada kode bawaan) → **Hitung cepat** (±5 panggilan API; keputusan sementara) atau **Hitung lengkap** (semua modul). Tab **Keputusan** menampilkan satu aksi (BELI/TUNGGU/HINDARI-JUAL), angka entry/SL/target, syarat berubah, dan sinyal yang tidak searah. Tombol *Lengkapi analisis* menambah modul tanpa mengulang yang sudah ada. Setiap respons API disimpan di database (cache 7 hari untuk fundamental, permanen untuk data harian yang sudah final) dan kuota bulanan (30.000) ditampilkan di sidebar. Tab **Histori** menyimpan setiap hasil dan laporan lengkapnya (MD/TXT) untuk dipanggil ulang tanpa API, serta *Rapor keputusan*: hasil nyata (TP1 vs SL) dari keputusan masa lalu. Konteks pasar & risiko (IHSG, notasi khusus, keterbukaan, insider, KSEI, peringkat) tampil di tab Keputusan; notasi khusus menahan BELI.
 
 **Ledger Broker** (tab sendiri): catatan broker harian per saham yang disimpan di database. Klik *Perbarui / backfill* (bertahap, terbatas 'Maks panggilan API'); status ACCUMULATION butuh net beli persisten + sinyal pendukung, bukan sekadar net positif. Biaya rata-rata & posisi tersisa = NET_FLOW_PROXY (bukan posisi aktual); broker bukan identitas 'bandar'. Zona distribusi = area penjualan teramati, bukan target broker.
 
@@ -918,8 +960,9 @@ if submitted:
             try:   # simpan laporan lengkap agar bisa dipanggil ulang dari tab Histori
                 import keputusan_ui
                 kep_s = keputusan_ui.hitung(r0, "lengkap" if lengkap else "cepat")[0]
-                simpan_snapshot(r0.params.kode, st.session_state.get("_hist_waktu") or dt.datetime.now(dt.timezone.utc),
-                                "lengkap" if lengkap else "cepat", kep_s, exp.get("md"), exp.get("txt"))
+                w_s = st.session_state.get("_hist_waktu") or dt.datetime.now(dt.timezone.utc)
+                simpan_snapshot(r0.params.kode, w_s, "lengkap" if lengkap else "cepat", kep_s, exp.get("md"), exp.get("txt"))
+                simpan_keputusan(r0.params.kode, w_s, "lengkap" if lengkap else "cepat", kep_s, r0, rk_)
             except Exception:
                 pass
 
@@ -1408,6 +1451,39 @@ with tab_hist:
             hapus_histori()
             st.rerun()
         st.caption("Target Adimologi = target realistis. Menampilkan 1.000 catatan terbaru.")
+    st.markdown("#### 🎯 Rapor keputusan (hasil nyata keputusan masa lalu)")
+    recs = daftar_keputusan()
+    if not recs:
+        st.caption("Belum ada keputusan tercatat. Setiap Hitung mencatat keputusan dan rencana angkanya untuk dievaluasi di sini.")
+    else:
+        import rapor as rp
+        uniq = sorted({x["emiten"] for x in recs})
+        st.caption(f"{len(recs)} keputusan tercatat untuk {len(uniq)} saham. Evaluasi memakai data harga harian sesudah tanggal data keputusan "
+                   f"(≤{len(uniq)} panggilan chart; sering sudah ada di cache). Aturan simulasi: entry di batas atas area beli (isi bila low menyentuh dalam 5 hari), "
+                   "TP1 vs SL mana lebih dulu (SL dulu bila satu bar menyentuh keduanya), biaya 0,4%.")
+        if st.button("Evaluasi sekarang", disabled=not key):
+            hasil, bar_ = [], {}
+            with st.spinner("Mengambil data harga & mengevaluasi..."):
+                for kd in uniq:
+                    try:
+                        bar_[kd] = tk.get_chart_panjang(CachedClient(key), kd, None)
+                    except Exception:
+                        bar_[kd] = None
+                for x in recs:
+                    e = rp.evaluasi(x, bar_.get(x["emiten"])) if bar_.get(x["emiten"]) is not None else dict(status="DATA_GAGAL")
+                    hasil.append(dict(Emiten=x["emiten"], Tanggal=str(pd.Timestamp(x["waktu"]).date()), keputusan=x["keputusan"], status=e["status"], r=e.get("r"),
+                                      Isi=e.get("isi"), Hari=e.get("hari")))
+            st.session_state["rapor"] = hasil
+        hs = st.session_state.get("rapor")
+        if hs:
+            tabel = rp.ringkas(hs)
+            st.dataframe(tabel, hide_index=True, width="stretch", column_config={
+                "Menang % (TP1/(TP1+SL))": st.column_config.NumberColumn(format="percent"), "CI95 bawah": st.column_config.NumberColumn(format="percent"),
+                "CI95 atas": st.column_config.NumberColumn(format="percent"), "Rata-rata R": st.column_config.NumberColumn(format="%.2f")})
+            st.caption("Angka baru bermakna bila n ≥ 30 per keputusan. Jika BELI tidak lebih baik dari HINDARI/TUNGGU secara konsisten, label keputusan belum punya nilai prediktif. "
+                       "Ini simulasi mekanis, bukan catatan transaksi Anda.")
+            with st.expander("Detail per keputusan"):
+                st.dataframe(pd.DataFrame(hs).rename(columns={"keputusan": "Keputusan", "status": "Status", "r": "R"}), hide_index=True, width="stretch")
     snaps = daftar_snapshot()
     if snaps:
         st.markdown("#### 🗂️ Panggil ulang laporan sebelumnya")
