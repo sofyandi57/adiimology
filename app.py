@@ -514,6 +514,8 @@ def ambil_aliran(client: ad.InvezgoClient, r: ad.Result) -> dict:
 
 
 PETUNJUK = """
+**Ledger Broker** (tab sendiri): catatan broker harian per saham yang disimpan di database. Klik *Perbarui / backfill* (bertahap, terbatas 'Maks panggilan API'); status ACCUMULATION butuh net beli persisten + sinyal pendukung, bukan sekadar net positif. Biaya rata-rata & posisi tersisa = NET_FLOW_PROXY (bukan posisi aktual); broker bukan identitas 'bandar'. Zona distribusi = area penjualan teramati, bukan target broker.
+
 **Bandarmologi = kerangka bukti** (Ringkasan): bukan skor tunggal. Kelompok broker tetap (top-3 akumulator non-ritel) diukur sepadan di
 jendela 1/3/7/20/60/200 hari; enam dimensi (konsistensi aliran, konsentrasi, estimasi modal transaksi, respons harga, volume & struktur, risiko
 distribusi). Hasilnya klasifikasi: Akumulasi terkonfirmasi (perilaku harga) / terindikasi / Distribusi terindikasi / Absorpsi supply / Tidak
@@ -809,8 +811,8 @@ st.caption("Penilaian bandarmologi berbasis bukti (aliran broker, asing, nego, f
            "Adimology dari data Invezgo. Edukasi, bukan ajakan transaksi. Semua aturan heuristik; target Adimology "
            "tidak terbukti unggul di backtest.")
 
-tab_main, tab_rek, tab_hk, tab_fund, tab_broker, tab_ob, tab_sens, tab_multi, tab_hist, tab_rumus = st.tabs(
-    ["Ringkasan", "Rekomendasi", "Aturan Hengky", "Fundamental", "Broker", "Orderbook", "Sensitivitas", "Multi-saham", "Histori", "Rumus & catatan"])
+tab_main, tab_rek, tab_hk, tab_fund, tab_broker, tab_ledger, tab_ob, tab_sens, tab_multi, tab_hist, tab_rumus = st.tabs(
+    ["Ringkasan", "Rekomendasi", "Aturan Hengky", "Fundamental", "Broker", "Ledger Broker", "Orderbook", "Sensitivitas", "Multi-saham", "Histori", "Rumus & catatan"])
 
 state = st.session_state.get("res")
 with tab_main:
@@ -1168,6 +1170,10 @@ with tab_multi:
                      column_config={"Net lot": st.column_config.NumberColumn(format="%,.0f"),
                                     "Avg bandar": st.column_config.NumberColumn(format="%.1f"),
                                     "Upside realistis %": st.column_config.NumberColumn(format="%+.1f")})
+
+with tab_ledger:
+    import ledger_ui
+    ledger_ui.tampil(kode, key)
 
 with tab_hist:
     hdf = load_histori()
