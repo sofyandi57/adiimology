@@ -121,7 +121,7 @@ def test_app_runs_and_computes(monkeypatch, tmp_path):
     # sesi baru (login ulang) masih melihat histori dari DB -> persisten
     at2 = open_app(monkeypatch)
     hdf = [d.value for d in at2.dataframe if "Nama Emiten" in d.value.columns][0]
-    assert [c for c in hdf.columns if c not in ("Vonis", "Mode", "Alasan utama")] == ["Nama Emiten", "Tanggal & Waktu Pengecekan", "Target Adimologi", "Stop Loss", "Current Price"]
+    assert [c for c in hdf.columns if c not in ("Vonis", "Mode", "Alasan utama", "Skor Bandar", "Skor Teknikal", "Skor Fundamental", "Rata-rata")] == ["Nama Emiten", "Tanggal & Waktu Pengecekan", "Target Adimologi", "Stop Loss", "Current Price"]
     assert hdf.iloc[0]["Vonis"] in ("BELI", "TUNGGU", "HINDARI / JUAL") and hdf.iloc[0]["Alasan utama"] not in ("", "-")
     assert len(hdf) == 1 and hdf.iloc[0]["Nama Emiten"] == "MCAS" and hdf.iloc[0]["Target Adimologi"] == 292
     assert hdf.iloc[0]["Tanggal & Waktu Pengecekan"].endswith("WIB")

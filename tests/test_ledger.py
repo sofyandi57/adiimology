@@ -301,3 +301,41 @@ def test_sesi_hilang_bukan_nol_buatan(eng):
     b = b[b.trade_date != HARI[-4]]
     L = lc.bangun(b, m, lc.Cfg())
     assert HARI[-4] not in set(L.trade_date) and L.trade_date.nunique() == 9
+
+
+def _ledger_sintetis(n=70):
+    """Harga naik lalu puncak (hari 50, volume ekstrem, PD beli besar), lalu turun; LG jual sistematis 20 sesi terakhir."""
+    import pandas as pd
+    rows, close = [], {}
+    p = 1000.0
+    for i, d in enumerate(HARI[:n]):
+        p = p * (1.01 if i < 50 else 0.985 if i > 50 else 1.0)
+        close[d] = round(p)
+    for i, d in enumerate(HARI[:n]):
+        vol = 10_000 if i != 50 else 60_000
+        base = dict(ticker="Z", trade_date=d, close_price=close[d], volume_lots=vol, crossing=False, is_final=True, broker_name="X",
+                    buy_avg_raw=close[d], sell_avg_raw=close[d], missing_data_flag=False)
+        def add(code, buy, sell):
+            rows.append(dict(base, broker_code=code, buy_lots=buy, sell_lots=sell, net_lots=buy - sell, buy_shares=buy * 100, sell_shares=sell * 100,
+                             buy_value=buy * 100 * close[d], sell_value=sell * 100 * close[d], net_value=(buy - sell) * 100 * close[d]))
+        add("PD", 15_000 if i == 50 else 100, 50)
+        add("AK", 20, 15_000 if i == 50 else 60)
+        add("LG", 5 if i >= n - 20 else 300, 400 if i >= n - 20 else 100)
+        add("BB", 200, 190)
+    return pd.DataFrame(rows)
+
+
+def test_distribusi_ritel_zona_dan_penjual_sistematis():
+    import ledger_score as ls
+    L = _ledger_sintetis()
+    L = L.sort_values(["broker_code", "trade_date"]).reset_index(drop=True)
+    L["cumulative_net_lots"] = L.groupby("broker_code")["net_lots"].cumsum()
+    dr = ls.distribusi_ke_ritel(L, ("PD", "XL"), 120)
+    assert len(dr) == 1 and dr[0]["tgl"] == str(HARI[50]) and dr[0]["turun"] and dr[0]["pct_volume"] >= 0.2
+    zp = ls.zona_pasokan(L, harga=900.0, ritel=("PD", "XL"))
+    assert zp and zp[0]["lo"] > 900 and zp[0]["lot"] >= 14_000
+    g = L[L.broker_code == "LG"]
+    v = lc.analisa_broker(g, lc.Cfg(), float(g.volume_lots.sum()))
+    assert v["jual_sistematis"] and v["status"] == lc.DIST
+    kk = ls.kelompok_kunci(L, ls.Cfg2(kelompok_excl=()))
+    assert "AK" not in kk and "PD" in kk                                       # net total negatif -> bukan akumulator

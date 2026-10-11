@@ -537,6 +537,19 @@ def analisa(info: dict | None, is_raw, bs_raw, cf_raw, keystat_raw, harga: float
         bank=bank, g_rev=g_rev_yoy[-1], outliers=nrm.get("outliers") if nrm.get("ok") else []))
     profil = {k: info.get(k) for k in ("board", "listing_date", "category", "administration", "notation")} if info else {}
 
+    def _lv(v, n=1):                                   # nilai valid ke-n dari belakang
+        vv = [x for x in (v or []) if x is not None and pd.notna(x)]
+        return float(vv[-n]) if len(vv) >= n else float("nan")
+    npl = pnl_rows["Laba bersih (induk)"]
+    metrik = dict(der=_lv(der), der_prev=_lv(der, 3), cr=_lv(cr) if not bank else float("nan"), cr_prev=_lv(cr, 3) if not bank else float("nan"),
+                  ll=_lv(bs_rows.get("Liabilitas jangka pendek")), ll_prev=_lv(bs_rows.get("Liabilitas jangka pendek"), 3),
+                  utang=_lv(bs_rows["Utang berbunga (estimasi)"]), utang_prev=_lv(bs_rows["Utang berbunga (estimasi)"], 3),
+                  g_rev_yoy=_lv(g_rev_yoy), g_rev_qoq=_lv(g_rev_qoq), g_np_yoy=_lv(g_np_yoy), g_np_qoq=_lv(g_np_qoq), gpm=_lv(gpm), npm=_lv(npm),
+                  roe=roe, roa=roa, pbv=pbv, per=per_, per_norm=per_norm, rev_ttm=rev_ttm, np_ttm=np_ttm, cfo_ttm=cfo_ttm, fcf_ttm=fcf_ttm, capex_ttm=capex_ttm,
+                  ekuitas=e_last, aset=a_last, liab=l_last, rugi_kuartal=int(sum(1 for x in npl[-4:] if pd.notna(x) and x < 0)),
+                  n_np_kuartal=int(sum(1 for x in npl[-4:] if pd.notna(x))), rev_kuartal=[None if pd.isna(x) else float(x) for x in pnl_rows[rev_nm][-4:]],
+                  np_kuartal=[None if pd.isna(x) else float(x) for x in npl[-4:]])
+
     return dict(nama=info.get("name") or "", sektor=info.get("sector") or "", subsektor=info.get("subsector") or "",
                 bank=bank, periode=L, kolom=[label(k) for k in kol],
                 pnl=pnl, bs=bsdf, cf=cfdf, val=valdf, mark=mark, vmark=vmark,
@@ -544,7 +557,7 @@ def analisa(info: dict | None, is_raw, bs_raw, cf_raw, keystat_raw, harga: float
                 chart=pd.DataFrame({"periode": [label(k) for k in kol], "pendapatan": row(rev, rev_ytd), "laba_bersih": row(npf, np_ytd)}),
                 ltm=dict(rev=(rev_ttm, rev_basis), ni=(np_ttm, np_basis), cfo=(cfo_ttm, cfo_basis), fcf=fcf_ttm, capex=capex_ttm,
                          ni_norm=np_norm, norm=nrm, net_debt=net_debt, cash_conv=cash_conv, per=per_, per_norm=per_norm, saham=saham, mcap=mcap),
-                kualitas=dict(hilang=hilang, fy=fy_pakai, ytd_kolom=ytd_kol, n_kolom=len(kol)), sens=sens, tesis=tesis, profil=profil)
+                kualitas=dict(hilang=hilang, fy=fy_pakai, ytd_kolom=ytd_kol, n_kolom=len(kol)), sens=sens, tesis=tesis, profil=profil, metrik=metrik)
 
 
 # ------------------------------------------------------------------ format

@@ -26,35 +26,15 @@ def _nilai(kat):
 
 
 def test_keputusan_rules():
+    """Vonis kini dari SKOR tiga dimensi (lihat tests/test_skor.py untuk kasus rinci); di sini hanya kontrak antarmuka dan batas keras."""
     r, rk, f = _inputs()
-    beli = dict(rk, verdict="BELI DI AREA ENTRY")
-    assert lp.keputusan(r, beli, f, nilai=_nilai("AKUMULASI KUAT"))[0] == "BELI"
-    kep, alasan = lp.keputusan(r, beli, f, nilai=_nilai("AKUMULASI LEMAH / BELUM SEARAH"))
-    assert kep == "TUNGGU" and any("jejak akumulasi" in a for a in alasan)
-    # jebakan ringan (harga dikejar) hanya menahan; jebakan penjualan/distribusi = veto
-    assert lp.keputusan(r, beli, f, nilai=_nilai("WASPADA: TANDA DISTRIBUSI / JEBAKAN"))[0] == "TUNGGU"
-    n_berat = dict(_nilai("AKUMULASI TERINDIKASI"), jebakan=["Bandar menjual 5.000 lot di pasar negosiasi"])
-    kep_b, al_b = lp.keputusan(r, beli, f, nilai=n_berat)
-    assert kep_b == "HINDARI / JUAL" and any("veto" in a for a in al_b)
-    # bandar = sensor risiko + penguat: jejak akumulasi (terkonfirmasi/terindikasi/absorpsi) + teknikal di area beli -> BELI; tidak konklusif -> TUNGGU
-    kep_k, al_k = lp.keputusan(r, beli, f, nilai=_nilai("AKUMULASI TERKONFIRMASI (perilaku harga)"))
-    assert kep_k == "BELI" and any("TERKONFIRMASI" in a for a in al_k)
-    kep_t, al_t = lp.keputusan(r, beli, f, nilai=_nilai("AKUMULASI TERINDIKASI"))
-    assert kep_t == "BELI" and any("BELUM terkonfirmasi" in a for a in al_t)
-    assert lp.keputusan(r, beli, f, nilai=_nilai("ABSORPSI SUPPLY"))[0] == "BELI"
-    assert lp.keputusan(r, beli, f, nilai=_nilai("TIDAK KONKLUSIF"))[0] == "TUNGGU"
-    # veto ledger: DISTRIBUTING/MARKDOWN dengan confidence cukup -> HINDARI; confidence rendah hanya menahan BELI
-    sg = dict(episode_status="DISTRIBUTING", confidence_score=0.8, bandar_score=3.0)
-    assert lp.keputusan(r, beli, f, nilai=_nilai("AKUMULASI TERINDIKASI"), ctx=dict(mode="lengkap", ledger=sg))[0] == "HINDARI / JUAL"
-    assert lp.keputusan(r, beli, f, nilai=_nilai("AKUMULASI TERINDIKASI"), ctx=dict(mode="lengkap", ledger=dict(sg, confidence_score=0.4)))[0] == "TUNGGU"
-    assert lp.keputusan(r, beli, f, nilai=_nilai("AKUMULASI TERINDIKASI"), ctx=dict(mode="lengkap", ledger=dict(sg, episode_status="ACCUMULATING", bandar_score=8)))[0] == "BELI"
-    assert lp.keputusan(r, beli, f, nilai=_nilai("AKUMULASI TERINDIKASI"), ctx=dict(mode="cepat"))[0] == "TUNGGU"
-    assert lp.keputusan(r, beli, f, nilai=_nilai("DISTRIBUSI TERINDIKASI"))[0] == "HINDARI / JUAL"
-    assert lp.keputusan(r, dict(rk, verdict="HINDARI"), f, nilai=_nilai("AKUMULASI KUAT"))[0] == "HINDARI / JUAL"
-    _, _, f_bad = _inputs(liab_scale=1.3)                         # utang > aset menang atas semuanya
-    kep, alasan = lp.keputusan(r, beli, f_bad, nilai=_nilai("AKUMULASI KUAT"))
-    assert kep == "HINDARI / JUAL" and any("LEBIH BESAR" in a for a in alasan)
+    kep, alasan = lp.keputusan(r, rk, f, nilai=_nilai("AKUMULASI KUAT"))
+    assert kep in ("BELI", "TUNGGU", "HINDARI / JUAL") and alasan[0].startswith("RINGKAS: ")
+    assert any(a.startswith("Skor Bandarmologi") for a in alasan) and any(a.startswith("Skor Teknikal") for a in alasan) and any(a.startswith("Skor Fundamental") for a in alasan)
     assert any("Skenario Adimology" in a for a in lp.keputusan(r, None, None)[1])
+    assert lp.keputusan(r, None, None)[0] == "TUNGGU"                          # data tidak cukup: bukan vonis tegas
+    _, _, f_bad = _inputs(liab_scale=1.3)                                      # utang > aset: skor fundamental dibatasi 2,5
+    assert any("FATAL" in a or "SOLVABILITAS" in a for a in lp.keputusan(r, rk, f_bad, nilai=_nilai("AKUMULASI KUAT"))[1])
 
 
 def test_pdf_and_excel_are_built():

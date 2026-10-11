@@ -199,14 +199,16 @@ def _sa_url(url: str) -> str:
 
 
 @st.cache_resource(show_spinner=False)
-def histori_engine(url: str, versi: int = 4) -> sa.Engine:     # naikkan versi bila ada tabel baru (cache resource bertahan antar-deploy)
+def histori_engine(url: str, versi: int = 5) -> sa.Engine:     # naikkan versi bila ada tabel baru (cache resource bertahan antar-deploy)
     eng = sa.create_engine(_sa_url(url), pool_pre_ping=True)
     HIST_META.create_all(eng)
     try:   # migrasi ringan: kolom alasan pada tabel keputusan yang sudah ada di Neon
         kolom = {c["name"] for c in sa.inspect(eng).get_columns("histori_keputusan")}
-        if "alasan" not in kolom:
-            with eng.begin() as c:
-                c.execute(sa.text("ALTER TABLE histori_keputusan ADD COLUMN alasan TEXT"))
+        for nm_, tp_ in (("alasan", "TEXT"), ("skor_bandar", "DOUBLE PRECISION"), ("skor_teknikal", "DOUBLE PRECISION"), ("skor_fund", "DOUBLE PRECISION"),
+                         ("skor_rata", "DOUBLE PRECISION")):
+            if nm_ not in kolom:
+                with eng.begin() as c:
+                    c.execute(sa.text(f"ALTER TABLE histori_keputusan ADD COLUMN {nm_} {tp_}"))
     except Exception:
         pass
     return eng
@@ -233,15 +235,15 @@ HIST_KEP = sa.Table(
     sa.Column("tgl_data", sa.Date),
     sa.Column("harga", sa.Float), sa.Column("entry_lo", sa.Float), sa.Column("entry_hi", sa.Float),
     sa.Column("zona_valid", sa.Boolean), sa.Column("sl", sa.Float), sa.Column("tp1", sa.Float), sa.Column("tp2", sa.Float),
-    sa.Column("alasan", sa.Text))
+    sa.Column("alasan", sa.Text), sa.Column("skor_bandar", sa.Float), sa.Column("skor_teknikal", sa.Float), sa.Column("skor_fund", sa.Float), sa.Column("skor_rata", sa.Float))
 
 
-def simpan_keputusan(kode: str, waktu: dt.datetime, mode: str, kep: str, r, rk: dict | None, alasan: str = "") -> None:
+def simpan_keputusan(kode: str, waktu: dt.datetime, mode: str, kep: str, r, rk: dict | None, alasan: str = "", skor: dict | None = None) -> None:
     """Angka rencana saat keputusan dibuat, untuk dievaluasi kemudian (rapor keputusan)."""
     row = dict(emiten=kode, waktu=waktu, mode=mode, keputusan=kep, tgl_data=r.tgl_akhir, harga=_num(r.harga),
                entry_lo=_num(rk["entry_lo"]) if rk else None, entry_hi=_num(rk["entry_hi"]) if rk else None, zona_valid=bool(rk["zona_valid"]) if rk else False,
                sl=_num(rk["sl"]) if rk else None, tp1=_num(rk["tp1"]) if rk else None, tp2=_num(rk["tp2"]) if rk else None,
-               alasan=alasan[:1500])
+               alasan=alasan[:1500], **{k_: v_ for k_, v_ in (skor or {}).items()})
     url = histori_url()
     if url:
         try:
@@ -982,10 +984,13 @@ if submitted:
             st.session_state["export"] = exp
             try:   # simpan laporan lengkap agar bisa dipanggil ulang dari tab Histori
                 import keputusan_ui
-                kep_s, alas_s = keputusan_ui.hitung(r0, "lengkap" if lengkap else "cepat")[:2]
+                kep_s, alas_s, rk_k, f_k, alr_k, hk_k, nl_k = keputusan_ui.hitung(r0, "lengkap" if lengkap else "cepat")
+                import skor as sk_
+                sc_k = sk_.hitung(r0, rk_k, f_k, alr_k, nl_k, hk_k, keputusan_ui.ctx_sesi("lengkap" if lengkap else "cepat"))
+                skor_k = dict(skor_bandar=sc_k["dims"][0]["skor"], skor_teknikal=sc_k["dims"][1]["skor"], skor_fund=sc_k["dims"][2]["skor"], skor_rata=sc_k["rata"])
                 w_s = st.session_state.get("_hist_waktu") or dt.datetime.now(dt.timezone.utc)
                 simpan_snapshot(r0.params.kode, w_s, "lengkap" if lengkap else "cepat", kep_s, exp.get("md"), exp.get("txt"))
-                simpan_keputusan(r0.params.kode, w_s, "lengkap" if lengkap else "cepat", kep_s, r0, rk_, keputusan_ui.alasan_ringkas(kep_s, alas_s, 5))
+                simpan_keputusan(r0.params.kode, w_s, "lengkap" if lengkap else "cepat", kep_s, r0, rk_, keputusan_ui.alasan_ringkas(kep_s, alas_s, 5), skor_k)
             except Exception:
                 pass
 
@@ -1468,11 +1473,13 @@ with tab_hist:
         for x in daftar_keputusan():
             w_ = pd.Timestamp(x["waktu"])
             w_ = (w_.tz_localize("UTC") if w_.tzinfo is None else w_).tz_convert(ZoneInfo("Asia/Jakarta")).strftime("%Y-%m-%d %H:%M:%S WIB")
-            vonis[(x["emiten"], w_)] = (x.get("keputusan"), x.get("mode"), x.get("alasan"))
+            vonis[(x["emiten"], w_)] = (x.get("keputusan"), x.get("mode"), x.get("alasan"), (x.get("skor_bandar"), x.get("skor_teknikal"), x.get("skor_fund"), x.get("skor_rata")))
         hdf = hdf.copy()
-        kk = [vonis.get((e_, w_), (None, None, None)) for e_, w_ in zip(hdf["Nama Emiten"], hdf["Tanggal & Waktu Pengecekan"])]
+        kk = [vonis.get((e_, w_), (None, None, None, (None, None, None, None))) for e_, w_ in zip(hdf["Nama Emiten"], hdf["Tanggal & Waktu Pengecekan"])]
         hdf.insert(1, "Vonis", [k[0] or "–" for k in kk])
         hdf.insert(2, "Mode", [k[1] or "" for k in kk])
+        for i_, nm_ in enumerate(("Skor Bandar", "Skor Teknikal", "Skor Fundamental", "Rata-rata")):
+            hdf.insert(3 + i_, nm_, [k[3][i_] if k[3][i_] is not None and pd.notna(k[3][i_]) else None for k in kk])
         hdf["Alasan utama"] = [(k[2] or ("belum tercatat (hitungan sebelum fitur vonis atau batch Multi-saham)" if not k[0] else "-")) for k in kk]
         terakhir = hdf[hdf["Vonis"] != "–"].drop_duplicates("Nama Emiten")
         hindari = terakhir[terakhir["Vonis"].str.startswith("HINDARI")]
@@ -1483,7 +1490,8 @@ with tab_hist:
         sty = hdf.style.map(lambda v: c_v.get(v, ""), subset=["Vonis"])
         st.dataframe(sty, hide_index=True, width="stretch",
                      column_config={**{c: st.column_config.NumberColumn(format="%,.0f") for c in ["Target Adimologi", "Stop Loss", "Current Price"]},
-                                    "Alasan utama": st.column_config.TextColumn(width="large")})
+                                    "Alasan utama": st.column_config.TextColumn(width="large"),
+                                    **{c: st.column_config.NumberColumn(format="%.1f") for c in ("Skor Bandar", "Skor Teknikal", "Skor Fundamental", "Rata-rata")}})
         with st.expander("Vonis terakhir per saham (ringkas)"):
             st.dataframe(terakhir[["Nama Emiten", "Vonis", "Alasan utama", "Tanggal & Waktu Pengecekan", "Current Price"]], hide_index=True, width="stretch")
         h1, h2, h3 = st.columns([1, 1, 1])

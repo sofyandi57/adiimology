@@ -137,6 +137,10 @@ def analisa_broker(g: pd.DataFrame, cfg: Cfg, vol_total_lots: float, validasi_ga
         evx = float(g["buy_value"].to_numpy()[sl][~cx[sl]].sum())
         ep.update(gross_buy_lots=eb, gross_sell_lots=float(sell[sl].sum()), net_lots=float(net[sl].sum()),
                   avg_buy_gross=ev / (eb * LOT) if eb > 0 else np.nan, avg_buy_ex_crossing=evx / (ebx * LOT) if ebx > 0 else np.nan)
+    k20j = slice(max(0, n_hari - 20), n_hari)
+    gb20, gs20 = float(buy[k20j].sum()), float(sell[k20j].sum())
+    jual_sistematis = bool(int((net[k20j] < 0).sum()) >= 15 and gs20 > 0 and gb20 < 0.05 * gs20)   # penjual sistematis: net jual >=15 dari 20 sesi, gross beli < 5% gross jual
+    res["jual_sistematis"] = jual_sistematis
     if n_aktif < cfg.min_hari_aktif:
         res.update(status=INSUF, confidence="Insufficient Data", sinyal_acc={}, sinyal_dist={}, catatan=f"hari aktif {n_aktif} < {cfg.min_hari_aktif}")
         return res
@@ -191,6 +195,9 @@ def analisa_broker(g: pd.DataFrame, cfg: Cfg, vol_total_lots: float, validasi_ga
         st = MIXED
     else:
         st = NEUTRAL
+    if jual_sistematis and st != DIST:
+        st = DIST
+        sig_d["D7 penjual sistematis (net jual >=15 dari 20 sesi, gross beli <5% gross jual)"] = True
     n_sig = (sum(sig_a.values()) if st in (ACC, MIXED) else sum(sig_d.values()) if st == DIST else 0)
     if validasi_gagal or st == NEUTRAL:
         conf = "Low"

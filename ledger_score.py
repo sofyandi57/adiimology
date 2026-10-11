@@ -104,8 +104,62 @@ def snapshot_derived(R: pd.DataFrame, tgl) -> pd.DataFrame:
 # ----------------------------------------------------------------- kelompok
 def kelompok_kunci(L: pd.DataFrame, cfg: Cfg2) -> list[str]:
     net60 = L[L["trade_date"].isin(sorted(L["trade_date"].unique())[-60:])].groupby("broker_code")["net_lots"].sum()
+    net_all = L.groupby("broker_code")["net_lots"].sum()                   # SELURUH riwayat termuat: net positif di 60H saja bisa artefak tanggal mulai jendela
     net60 = net60[~net60.index.isin(cfg.kelompok_excl)]
-    return [k for k in net60.sort_values(ascending=False).index[: cfg.top_n] if net60[k] > 0]
+    return [k for k in net60.sort_values(ascending=False).index if net60[k] > 0 and net_all.get(k, 0) > 0][: cfg.top_n]
+
+
+def ritel_codes() -> tuple:
+    import aliran as al_
+    return tuple(al_.RITEL_DEFAULT)
+
+
+def distribusi_ke_ritel(L: pd.DataFrame, ritel: tuple | None = None, sesi: int = 120) -> list[dict]:
+    """Hari volume ekstrem di dekat high 60H ketika broker ritel menjadi pembeli bersih besar (institusi di seberangnya): kandidat 'distribusi ke ritel'."""
+    ritel = ritel or ritel_codes()
+    M = pasar_harian(L)
+    vol, close = M["volume_lots"], M["close_price"]
+    rvol = vol / vol.shift(1).rolling(20, min_periods=10).median()
+    hi60 = close.rolling(60, min_periods=20).max()
+    net = _wide(L, "net_lots")
+    rn = net[[c for c in net.columns if c in ritel]].sum(axis=1) if any(c in ritel for c in net.columns) else pd.Series(0.0, index=net.index)
+    out = []
+    tgl = list(M.index)
+    for i, d in enumerate(tgl[-sesi:], start=max(0, len(tgl) - sesi)):
+        if rvol.iloc[i] >= 2 and close.iloc[i] >= 0.97 * hi60.iloc[i] and rn.iloc[i] >= 0.2 * vol.iloc[i]:
+            fut = float(close.iloc[min(i + 5, len(close) - 1)] / close.iloc[i] - 1) if i < len(close) - 1 else float("nan")
+            out.append(dict(tgl=str(d := tgl[i]), rvol=float(rvol.iloc[i]), ritel_net_lot=float(rn.iloc[i]), pct_volume=float(rn.iloc[i] / vol.iloc[i]),
+                            close=float(close.iloc[i]), ret_5d=fut, turun=bool(not np.isnan(fut) and fut <= -0.05)))
+    return out
+
+
+def zona_pasokan(L: pd.DataFrame, harga: float, ritel: tuple | None = None, sesi: int = 120) -> list[dict]:
+    """Zona harga DI ATAS harga sekarang tempat broker ritel menumpuk net beli (pemegang yang kemungkinan masih rugi akan menjual saat harga kembali ke modalnya)."""
+    ritel = ritel or ritel_codes()
+    M = pasar_harian(L)
+    tgl = list(M.index)[-sesi:]
+    net = _wide(L, "net_lots")
+    rn = net[[c for c in net.columns if c in ritel]].sum(axis=1).reindex(tgl).fillna(0.0) if any(c in ritel for c in net.columns) else pd.Series(0.0, index=tgl)
+    close = M["close_price"].reindex(tgl)
+    lebar = max(float(close.median()) * 0.03, 1e-9)
+    bins = (close / lebar).round().astype(int)
+    per_bin = rn.groupby(bins).sum()
+    pos = per_bin[per_bin > 0]
+    if pos.empty or pos.sum() <= 0:
+        return []
+    zona = []
+    for b, lot in pos.items():
+        lo, hi = (b - 0.5) * lebar, (b + 0.5) * lebar
+        if lo > harga * 1.01 and lot >= 0.15 * pos.sum():
+            zona.append(dict(lo=float(lo), hi=float(hi), lot=float(lot), pct=float(lot / pos.sum())))
+    zona.sort(key=lambda z: z["lo"])
+    merged = []
+    for z in zona:
+        if merged and z["lo"] <= merged[-1]["hi"] * 1.005:
+            merged[-1].update(hi=z["hi"], lot=merged[-1]["lot"] + z["lot"], pct=merged[-1]["pct"] + z["pct"])
+        else:
+            merged.append(dict(z))
+    return merged[:3]
 
 
 def _na(x):
@@ -211,6 +265,13 @@ def hitung(res: dict, meta: dict | None, cfg: Cfg2 | None = None, now: dt.dateti
         risiko.append((0.5, f"nilai jual 5D = {sv5 / svr:.1f}x rata-rata"))
     if close.iloc[-1] >= 0.97 * hi60 and net5 < 0:
         risiko.append((0.5, "harga dekat high 60D sementara kelompok net jual"))
+    dr = distribusi_ke_ritel(L, None)
+    dr_k = [x for x in dr if x["turun"]]
+    if dr_k:
+        risiko.append((0.5, f"distribusi ke ritel: {len(dr_k)} hari volume ekstrem di dekat puncak dengan broker ritel net beli besar lalu harga turun >=5% (terakhir {dr_k[-1]['tgl']})"))
+    zp = zona_pasokan(L, float(close.iloc[-1]))
+    if zp:
+        risiko.append((0.5, "zona pasokan di atas harga: " + "; ".join(f"{z['lo']:,.0f}-{z['hi']:,.0f} ({z['lot']:,.0f} lot ritel net beli)" for z in zp)))
     p5 = max(0.0, 2.0 - sum(x for x, _ in risiko))
     komp.append(dict(dimensi="Risiko distribusi", poin=p5, maks=2, detail="; ".join(t for _, t in risiko) or "tidak ada tanda distribusi"))
     for _, t in risiko:
@@ -270,7 +331,7 @@ def hitung(res: dict, meta: dict | None, cfg: Cfg2 | None = None, now: dt.dateti
         why.append("tidak ada kelompok net beli")
     return dict(base, episode_id=episode_id, bandar_score=skor, label=label, score_components=komp, episode_status=status, confidence_score=round(conf, 2),
                 confidence_reason=why or ["data lengkap dan tervalidasi"], supporting_evidence=sup, contradicting_evidence=lawan, key_brokers=grp,
-                likuid=likuid, nilai_transaksi_20d=nilai20, cfg=asdict(cfg))
+                likuid=likuid, nilai_transaksi_20d=nilai20, cfg=asdict(cfg), distribusi_ritel=dr, zona_pasokan=zp)
 
 
 def _kosong(meta, alasan, ts):

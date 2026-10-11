@@ -8,6 +8,7 @@ import audit as au
 import bandar as bd
 import konteks as ktx
 import laporan as lp
+import skor as sk
 
 MODUL = [("tek", "Teknikal"), ("aliran", "Aliran asing/nego"), ("dinamis", "Dinamika bandar"), ("b200", "Bandar 200 hari"),
          ("hengky", "Aturan Hengky"), ("fund", "Fundamental"), ("ovn", "BPJP/BSJP")]
@@ -56,11 +57,39 @@ def hitung(r, mode: str):
 
 def tampil(r, mode: str) -> None:
     kep, alasan, rk, f, alr, hk_, nilai = hitung(r, mode)
+    sc = sk.hitung(r, rk, f, alr, nilai, hk_, ctx_sesi(mode))
+    kolom = st.columns(4)
+    for c_, d in zip(kolom[:3], sc["dims"]):
+        c_.metric(d["nama"], f"{d['skor']}/10" if d["skor"] is not None else "N/A", d["label"] + ("" if d["andal"] or d["skor"] is None else " · belum andal"), delta_color="off")
+        if d["skor"] is not None:
+            c_.progress(min(d["skor"] / 10, 1.0))
+    kolom[3].metric("Rata-rata", f"{sc['rata']}/10" if sc["rata"] is not None else "N/A",
+                    f"{sk.label(sc['rata'])} · {sc['n_andal']} dimensi andal", delta_color="off")
+    if sc["rata"] is not None:
+        kolom[3].progress(min(sc["rata"] / 10, 1.0))
+    st.caption("Skor 1–10 = heuristik internal yang BELUM terbukti. `belum andal` = data tidak cukup (mis. Bandarmologi tanpa ledger ≥ 60 sesi); dimensi itu tidak dipakai untuk vonis bila ada ≥ 2 dimensi andal. "
+               + ("Rata-rata semua dimensi: " + str(sc["rata_semua"]) + "." if sc["rata_semua"] != sc["rata"] else ""))
     box = {"BELI": st.success, "TUNGGU": st.warning}.get(kep, st.error)
-    sub = " · ".join(a for a in alasan[:3])
-    if kep == "BELI":
-        sub = ("Bukti bandar KUAT (terkonfirmasi). " if bd.gate(nilai) == "kuat" else "Bukti bandar SEDANG (belum terkonfirmasi): posisi lebih kecil. ") + sub
+    sub = sc["ringkas"] + " · " + "; ".join(sc["ket"])
     box(f"### {r.params.kode} → {kep}\n{sub}", icon={"BELI": "🟢", "TUNGGU": "🟡"}.get(kep, "🔴"))
+    pos = sc["posisi"]
+    cp_, pm_ = st.columns(2)
+    cp_.info(f"**Calon pembeli:** {pos['calon_pembeli']}", icon="🛒")
+    pm_.info(f"**Sudah punya saham ini:** {pos['pemegang']}", icon="📦")
+    for fl in sc["flags"]:
+        st.warning("Bendera: " + fl, icon="🚩")
+    with st.expander("📐 Rincian skor (komponen, bukti pendukung dan berlawanan)"):
+        for d in sc["dims"]:
+            st.markdown(f"**{d['nama']}: {d['skor'] if d['skor'] is not None else 'N/A'}/10 ({d['label']})**" + ("" if d["andal"] or d["skor"] is None else " · belum andal"))
+            if d["catatan"]:
+                st.caption(d["catatan"])
+            if d["komponen"]:
+                st.dataframe(pd.DataFrame(d["komponen"]).rename(columns={"nama": "Komponen", "poin": "Poin", "maks": "Maks", "detail": "Detail"}), hide_index=True, width="stretch")
+            c1_, c2_ = st.columns(2)
+            c1_.markdown("**Mendukung**\n" + ("\n".join(f"- {x}" for x in d["bukti"][:8]) or "- -"))
+            c2_.markdown("**Berlawanan**\n" + ("\n".join(f"- {x}" for x in d["lawan"][:8]) or "- -"))
+            for ln in d.get("lensa", []):
+                st.caption("Lensa bandar: " + ln)
     if mode == "cepat":
         st.caption("Mode **cepat**: keputusan sementara dari data dasar (harga, broker window, teknikal). Fundamental, dinamika bandar, Hengky, ritel belum dihitung.")
 
@@ -117,7 +146,11 @@ def tampil(r, mode: str) -> None:
 
 
 def alasan_ringkas(kep: str, alasan: list[str], maks: int = 4) -> str:
-    """Alasan utama satu baris untuk tabel Histori: penyebab vonis (bukan seluruh rincian)."""
+    """Alasan utama satu baris untuk tabel Histori: skor tiga dimensi + bendera; bila tidak ada, ringkasan penyebab."""
+    for a in alasan:
+        if a.startswith("RINGKAS: "):
+            bend = [x[len("Bendera: "):] for x in alasan if x.startswith("Bendera: ")]
+            return a[len("RINGKAS: "):] + ((" · bendera: " + ", ".join(bend)) if bend else "")
     out = []
     for a in alasan:
         t = a.strip()

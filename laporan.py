@@ -47,20 +47,12 @@ def _fatal(f: dict | None) -> list[str]:
 
 def keputusan(r, rk: dict | None, f: dict | None, alr: dict | None = None,
               nilai: dict | None = None, hk_: dict | None = None, ctx: dict | None = None) -> tuple[str, list[str]]:
-    """Keputusan dasar + batas dari konteks (ctx = {'mode': 'cepat'|'lengkap', 'konteks': hasil konteks.ambil}): satu sumber untuk UI, PDF, Excel, TXT, MD."""
-    kep, alasan = _keputusan_dasar(r, rk, f, alr, nilai, hk_)
-    if ctx and ctx.get("ledger"):               # veto ledger: distribusi/markdown terdokumentasi pada riwayat broker harian
-        sg = ctx["ledger"]
-        st_ = sg.get("episode_status")
-        if st_ in ("DISTRIBUTING", "MARKDOWN") and kep != "HINDARI / JUAL":
-            if sg.get("confidence_score", 0) >= 0.6:
-                kep = "HINDARI / JUAL"
-                alasan.append(f"Ledger broker: status {st_} (skor {sg.get('bandar_score')}, confidence {sg.get('confidence_score')}) = veto, bandar sedang keluar")
-            elif kep == "BELI":
-                kep = "TUNGGU"
-                alasan.append(f"BELI ditahan: ledger broker menunjukkan {st_} (confidence rendah {sg.get('confidence_score')})")
-        elif sg.get("bandar_score") is not None and kep == "BELI":
-            alasan.append(f"Ledger broker: skor {sg['bandar_score']}/10, status {st_} (informasi pendukung, tidak mengubah vonis)")
+    """Vonis dari SKOR tiga dimensi (skor.py): bandarmologi, teknikal, fundamental (1-10) -> rata-rata. ctx = {'mode', 'konteks', 'ledger'}.
+    Satu sumber untuk UI, PDF, Excel, TXT, MD dan Histori. Aturan lama berbasis veto tunggal digantikan skor bertingkat."""
+    import skor as sk
+    nilai = nilai or bd.penilaian(r, alr, rk)
+    sc = sk.hitung(r, rk, f, alr, nilai, hk_, ctx or {})
+    kep, alasan = sc["vonis"], sc["alasan"]
     if ctx:
         import konteks as ktx
         kep, alasan = ktx.terapkan(kep, alasan, ctx.get("konteks"), ctx.get("mode", "lengkap"))

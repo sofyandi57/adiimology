@@ -133,6 +133,15 @@ def tampil(kode: str, api_key: str | None) -> None:
             st.markdown("**Bukti mendukung**\n" + "\n".join(f"- {x}" for x in sinyal["supporting_evidence"][:8]))
             st.markdown("**Bukti berlawanan**\n" + "\n".join(f"- {x}" for x in sinyal["contradicting_evidence"][:8]))
         st.caption("Sinyal disimpan di database (ledger_signal) dan hanya dihitung ulang bila data ledger atau konfigurasi berubah." + (" Dihitung ulang sekarang." if dihitung else " Memakai sinyal tersimpan."))
+    if sinyal.get("distribusi_ritel") or sinyal.get("zona_pasokan"):
+        with st.expander("Distribusi ke ritel & zona pasokan (broker ritel XL/YP/XC/PD)", expanded=bool(sinyal.get("zona_pasokan"))):
+            if sinyal.get("distribusi_ritel"):
+                st.markdown("**Hari volume ekstrem di dekat puncak ketika broker ritel net beli besar** (kandidat distribusi ke ritel; `turun` = harga turun ≥ 5% dalam 5 sesi)")
+                st.dataframe(pd.DataFrame(sinyal["distribusi_ritel"]), hide_index=True, width="stretch")
+            if sinyal.get("zona_pasokan"):
+                st.markdown("**Zona pasokan di atas harga sekarang** (ritel menumpuk net beli; pemegang yang masih rugi cenderung menjual saat harga kembali ke sana; memotong target jual)")
+                st.dataframe(pd.DataFrame(sinyal["zona_pasokan"]).rename(columns={"lo": "Dari", "hi": "Sampai", "lot": "Lot ritel net beli", "pct": "Porsi"}), hide_index=True, width="stretch",
+                             column_config={"Porsi": st.column_config.NumberColumn(format="percent")})
     with st.expander("Rolling flow per broker (sesi bursa: 1D/5D/20D/60D/120D/YTD)"):
         Rr = ls.rolling_broker(res["ledger"])
         tl = Rr["trade_date"].max()
