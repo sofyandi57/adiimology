@@ -605,6 +605,8 @@ def ambil_aliran(client: ad.InvezgoClient, r: ad.Result) -> dict:
 
 
 PETUNJUK = """
+**Alur singkat:** isi kode saham (tidak ada kode bawaan) → **Hitung cepat** (±5 panggilan API; keputusan sementara) atau **Hitung lengkap** (semua modul). Tab **Keputusan** menampilkan satu aksi (BELI/TUNGGU/HINDARI-JUAL), angka entry/SL/target, syarat berubah, dan sinyal yang tidak searah. Tombol *Lengkapi analisis* menambah modul tanpa mengulang yang sudah ada. Setiap respons API disimpan di database (cache 7 hari untuk fundamental, permanen untuk data harian yang sudah final) dan kuota bulanan (30.000) ditampilkan di sidebar. Tab **Histori** menyimpan setiap hasil dan laporan lengkapnya (MD/TXT) untuk dipanggil ulang tanpa API.
+
 **Ledger Broker** (tab sendiri): catatan broker harian per saham yang disimpan di database. Klik *Perbarui / backfill* (bertahap, terbatas 'Maks panggilan API'); status ACCUMULATION butuh net beli persisten + sinyal pendukung, bukan sekadar net positif. Biaya rata-rata & posisi tersisa = NET_FLOW_PROXY (bukan posisi aktual); broker bukan identitas 'bandar'. Zona distribusi = area penjualan teramati, bukan target broker.
 
 **Bandarmologi = kerangka bukti** (Ringkasan): bukan skor tunggal. Kelompok broker tetap (top-3 akumulator non-ritel) diukur sepadan di

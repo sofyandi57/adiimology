@@ -15,10 +15,12 @@ Target harga metode Adimology dari data **broker summary + orderbook Invezgo**. 
 - `bandar.py`: penilaian bandarmologi berbasis bukti (7 kriteria + deteksi jebakan); target Adimology diperlakukan sebagai skenario karena backtest tidak menunjukkan edge
 - `aliran.py`: konfirmasi aliran: asing, pasar nego, konsistensi bandar 1/3/7/20 hari, afiliasi broker dengan pemegang saham >= 5%, minat ritel (SID + aliran broker ritel XL/XC/PD/CC/YP)
 - `teknikal.py`: analisa teknikal tab Rekomendasi (support/resistance, MA 5/20/50/100/200, RSI, MACD, ATR, bandar value)
+- `apicache.py`: cache respons Invezgo di database (TTL per jenis data, 422 disimpan, batas ukuran, penghitung kuota bulanan)
+- `keputusan_ui.py`: kartu keputusan tunggal (BELI/TUNGGU/HINDARI-JUAL) di tab Keputusan
 - `ledger.py`: buku besar broker harian di database (respons mentah terpisah, upsert idempoten, backfill bertahap, rekonsiliasi, log API, validasi data)
 - `ledger_calc.py`: episode akumulasi, biaya rata-rata (proksi), posisi tersisa (skenario NET_FLOW_PROXY), status, zona distribusi, peringatan
 - `ledger_ui.py`: tab Ledger Broker
-- `tests/`: 112 tes (ledger broker, (kerangka bukti bandar, audit, fundamental FY/LTM, minat ritel, ringkasan TXT, Hengky, bandar jangka panjang, penilaian bandar, backtest, login, aliran, teknikal, BPJP/BSJP, fundamental, ekspor, rumus, fraksi bertingkat, kasus MCAS sama dengan output Colab, UI smoke test)
+- `tests/`: 126 tes (ledger broker, (kerangka bukti bandar, audit, fundamental FY/LTM, minat ritel, ringkasan TXT, Hengky, bandar jangka panjang, penilaian bandar, backtest, login, aliran, teknikal, BPJP/BSJP, fundamental, ekspor, rumus, fraksi bertingkat, kasus MCAS sama dengan output Colab, UI smoke test)
 
 ## Jalankan lokal
 ```bash

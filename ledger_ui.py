@@ -52,9 +52,11 @@ def tampil(kode: str, api_key: str | None) -> None:
     if not persisten:
         st.warning("Database persisten belum diatur: ledger memakai file lokal sementara yang HILANG saat aplikasi di-restart/redeploy. "
                    "Isi `[connections.ledger] url` (atau pakai `[connections.histori]`) di Secrets.")
+    st.caption("Hemat kuota: hari yang sudah final di ledger TIDAK diambil lagi, dan Hitung memakai ledger (0 panggilan) untuk rentang yang seluruh harinya sudah tersimpan. "
+               "Mulai 20 hari; tambah bertahap bila perlu.")
     c1, c2, c3, c4 = st.columns([1, 1, 1, 1])
-    hari = c1.number_input("Hari bursa dimuat", 20, 250, 60, step=10, help="Jendela data. Batas harian dasar: 1 panggilan API per hari bursa yang belum final.")
-    mx = c2.number_input("Maks panggilan API / klik", 5, 200, 60, step=5, help="Menjaga kuota/rate limit. Klik lagi untuk melanjutkan backfill.")
+    hari = c1.number_input("Hari bursa dimuat", 20, 250, 20, step=10, help="Jendela data. Batas harian dasar: 1 panggilan API per hari bursa yang belum final.")
+    mx = c2.number_input("Maks panggilan API / klik", 5, 200, 25, step=5, help="Menjaga kuota/rate limit. Klik lagi untuk melanjutkan backfill.")
     upd = c3.button("⬇️ Perbarui / backfill", width="stretch", disabled=not api_key)
     rek = c4.button("🔁 Rekonsiliasi 3 hari", width="stretch", disabled=not api_key,
                     help="Ambil ulang 3 hari terakhir dan koreksi bila sumber merevisi data.")
