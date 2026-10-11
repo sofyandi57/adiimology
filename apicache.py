@@ -42,6 +42,16 @@ T_USAGE = sa.Table(
     sa.Column("req", sa.Integer, nullable=False, default=0),
     sa.Column("hit", sa.Integer, nullable=False, default=0))
 
+def _ad():
+    """Modul adimology SAAT INI (Streamlit dapat memuat ulang modul lokal; referensi lama membuat kelas exception tidak cocok)."""
+    import importlib
+    return importlib.import_module("adimology")
+
+
+def ditolak(e: BaseException) -> bool:
+    return type(e).__name__ == "ParamDitolak"
+
+
 _lock = threading.Lock()
 _puts = [0]
 
@@ -139,24 +149,25 @@ def ambil(eng, path: str, params_items: tuple, api_key: str, now: dt.datetime | 
                 obj = json.loads(zlib.decompress(row[0]))
                 _hitung(eng, 0, 1, now)
                 if isinstance(obj, dict) and obj.get("__ditolak"):
-                    raise ad.ParamDitolak(obj["__ditolak"])
+                    raise _ad().ParamDitolak(obj["__ditolak"])
                 return obj
-        except ad.ParamDitolak:
-            raise
-        except Exception:
-            pass
-    n0 = ad.REQ_COUNT[0]
+        except Exception as e:
+            if ditolak(e):
+                raise
+    A = _ad()
+    n0 = A.REQ_COUNT[0]
     try:
-        hasil = ad.fetch_json(api_key, path, params_items)
-    except ad.ParamDitolak as e:
-        _catat(eng, ad.REQ_COUNT[0] - n0, now)
-        if ttl is not None:
-            try:
-                _simpan(eng, k, path, params_items, {"__ditolak": str(e)}, 30 * 86400, now)
-            except Exception:
-                pass
+        hasil = A.fetch_json(api_key, path, params_items)
+    except Exception as e:
+        _catat(eng, A.REQ_COUNT[0] - n0, now)
+        if ditolak(e):
+            if ttl is not None:
+                try:
+                    _simpan(eng, k, path, params_items, {"__ditolak": str(e)}, 30 * 86400, now)
+                except Exception:
+                    pass
         raise
-    _catat(eng, ad.REQ_COUNT[0] - n0, now)
+    _catat(eng, A.REQ_COUNT[0] - n0, now)
     if ttl is not None:
         try:
             _simpan(eng, k, path, params_items, hasil, ttl, now)

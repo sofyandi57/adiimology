@@ -96,3 +96,21 @@ def test_db_mati_jatuh_ke_api(api):
             raise RuntimeError("db mati")
     r = ac.ambil(Rusak(), "/analysis/chart/stock/BBCA", (("to", "2020-01-01"),), "k")
     assert r["n"] == 1
+
+
+def test_ditolak_menurut_nama_tahan_reload(eng, monkeypatch):
+    import importlib
+    old = ad.ParamDitolak
+    importlib.reload(ad)                       # kelas baru != kelas lama (seperti pemuatan ulang modul oleh Streamlit)
+    assert ad.ParamDitolak is not old
+    assert ac.ditolak(old("x")) and ac.ditolak(ad.ParamDitolak("x"))
+
+    def fake(url, headers=None, params=None, timeout=None):
+        return Resp(422)
+    monkeypatch.setattr(requests, "get", fake)
+    with pytest.raises(Exception) as ei:
+        ac.ambil(eng, "/analysis/financial-statement/X", (("limit", "8"),), "k")
+    assert ac.ditolak(ei.value)
+    with pytest.raises(Exception) as ei2:                    # kedua kali dari cache negatif
+        ac.ambil(eng, "/analysis/financial-statement/X", (("limit", "8"),), "k")
+    assert ac.ditolak(ei2.value)

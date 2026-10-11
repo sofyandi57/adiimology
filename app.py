@@ -71,12 +71,16 @@ def get_api_key() -> str | None:
     return get_secret("INVEZGO_API_KEY") or st.session_state.get("_key_input") or None
 
 
+def _adim_err(e: BaseException) -> bool:
+    """AdimologyError menurut kelas ATAU nama (Streamlit dapat memuat ulang modul sehingga kelas lama != kelas baru)."""
+    return isinstance(e, ad.AdimologyError) or any(c.__name__ in ("AdimologyError", "ParamDitolak") for c in type(e).__mro__)
+
+
 def db_engine():
     """Engine DB bersama (ledger + cache API). None bila DB tidak dapat dibuka."""
     try:
         import ledger_ui
-        eng = ledger_ui._engine()[0]
-        return apicache.siapkan(eng)
+        return ledger_ui._engine()[0]
     except Exception:
         return None
 
@@ -99,13 +103,12 @@ def _cached_fetch(path: str, params_items: tuple, _key: str):
             if hasil is not None:
                 apicache._hitung(eng, 0, 1)
                 return hasil
-    except (ad.AdimologyError, ad.ParamDitolak):
-        raise
-    except Exception:
-        pass
-    n0 = ad.REQ_COUNT[0]
+    except Exception as e:
+        if _adim_err(e):
+            raise
+    n0 = apicache._ad().REQ_COUNT[0]
     hasil = apicache.ambil(eng, path, params_items, _key)
-    if "/chart/stock/" in path and ad.REQ_COUNT[0] > n0 and isinstance(hasil, list) and len(hasil) > 150:
+    if "/chart/stock/" in path and apicache._ad().REQ_COUNT[0] > n0 and isinstance(hasil, list) and len(hasil) > 150:
         try:
             import ledger as lg_
             lg_.simpan_chart(eng, kode_p, hasil)
@@ -195,7 +198,7 @@ def _sa_url(url: str) -> str:
 
 
 @st.cache_resource(show_spinner=False)
-def histori_engine(url: str) -> sa.Engine:
+def histori_engine(url: str, versi: int = 2) -> sa.Engine:     # naikkan versi bila ada tabel baru (cache resource bertahan antar-deploy)
     eng = sa.create_engine(_sa_url(url), pool_pre_ping=True)
     HIST_META.create_all(eng)
     return eng
@@ -567,7 +570,9 @@ def ambil_fundamental(client: ad.InvezgoClient, kode: str, harga: float) -> dict
         for limit in ((fd.N_KUARTAL, 8, 5, 4, 2, 1) if tipe == "Q" else (4, 3, 2, 1)):
             try:
                 return client.get(f"/analysis/financial-statement/{kode}", {"statement": statement, "type": tipe, "limit": limit})
-            except ad.ParamDitolak:
+            except Exception as e:      # cocok menurut nama: modul dapat dimuat ulang Streamlit (kelas berbeda)
+                if type(e).__name__ != "ParamDitolak":
+                    raise
                 continue
         if tipe == "Q":
             raise ad.AdimologyError(f"Laporan keuangan {kode} ({statement}) belum tersedia di Invezgo.")
@@ -804,13 +809,13 @@ if submitted:
                     bv = tk.bandar_value(r0.bs, r0.bandar["codes"], r0.params.broker_dikecualikan)
                     st.session_state["tek"] = ("ok", tk.rekomendasi(df_tk, bv))
             except Exception as e:  # teknikal gagal tidak boleh mematikan kalkulator
-                st.session_state["tek"] = ("err", str(e) if isinstance(e, ad.AdimologyError) else f"Error tak terduga: {e}")
+                st.session_state["tek"] = ("err", str(e) if _adim_err(e) else f"Error tak terduga: {e}")
             if aliran_on and lengkap:
                 try:
                     with st.spinner("Mengambil aliran asing, nego, konsistensi, afiliasi..."):
                         st.session_state["aliran"] = ("ok", ambil_aliran(CachedClient(key), r0))
                 except Exception as e:  # aliran gagal tidak boleh mematikan kalkulator
-                    st.session_state["aliran"] = ("err", str(e) if isinstance(e, ad.AdimologyError) else f"Error tak terduga: {e}")
+                    st.session_state["aliran"] = ("err", str(e) if _adim_err(e) else f"Error tak terduga: {e}")
             ali_, tek_n = st.session_state.get("aliran"), st.session_state.get("tek")
             rk_n = tek_n[1] if tek_n and tek_n[0] == "ok" else None
             src_n = rk_n["ind"] if rk_n else r0.chart
@@ -822,7 +827,7 @@ if submitted:
                         st.session_state["dinamis"] = ("ok", dn.analisa(raw_d["inv"], r0.harga, r0.params.broker_dikecualikan, r0.konsentrasi,
                                                                         hk.pv_baca(src_n), raw_d["summaries"], raw_d["inv200"]))
                 except Exception as e:  # dinamika bandar gagal tidak boleh mematikan kalkulator
-                    st.session_state["dinamis"] = ("err", str(e) if isinstance(e, ad.AdimologyError) else f"Error tak terduga: {e}")
+                    st.session_state["dinamis"] = ("err", str(e) if _adim_err(e) else f"Error tak terduga: {e}")
             din_ = st.session_state.get("dinamis")
             st.session_state["nilai"] = bd.penilaian(r0, ali_[1] if ali_ and ali_[0] == "ok" else None, rk_n,
                                                      din_[1] if din_ and din_[0] == "ok" else None)
@@ -835,7 +840,7 @@ if submitted:
                             r0.params.broker_dikecualikan, r0.params.investor, r0.params.market, hari=int(b200_hari),
                             ritel_codes=tuple(c.strip().upper() for c in ritel_in.split(",") if c.strip())))
                 except Exception as e:  # bandar jangka panjang gagal tidak boleh mematikan kalkulator
-                    st.session_state["b200"] = ("err", str(e) if isinstance(e, ad.AdimologyError) else f"Error tak terduga: {e}")
+                    st.session_state["b200"] = ("err", str(e) if _adim_err(e) else f"Error tak terduga: {e}")
             sid_ = None
             if lengkap:
                 try:
@@ -852,18 +857,18 @@ if submitted:
                     with st.spinner("Memeriksa aturan Hengky..."):
                         st.session_state["hengky"] = ("ok", hk.analisa(CachedClient(key), r0, rk_n, st.session_state["nilai"], min_nilai_m, sid_))
                 except Exception as e:  # aturan Hengky gagal tidak boleh mematikan kalkulator
-                    st.session_state["hengky"] = ("err", str(e) if isinstance(e, ad.AdimologyError) else f"Error tak terduga: {e}")
+                    st.session_state["hengky"] = ("err", str(e) if _adim_err(e) else f"Error tak terduga: {e}")
                 try:
                     with st.spinner("Mengambil laporan keuangan..."):
                         st.session_state["fund"] = ("ok", ambil_fundamental(CachedClient(key), r0.params.kode, r0.harga))
                 except Exception as e:  # fundamental gagal tidak boleh mematikan kalkulator
-                    st.session_state["fund"] = ("err", str(e) if isinstance(e, ad.AdimologyError) else f"Error tak terduga: {e}")
+                    st.session_state["fund"] = ("err", str(e) if _adim_err(e) else f"Error tak terduga: {e}")
                 try:
                     with st.spinner("Menghitung statistik BPJP/BSJP (candle 30 menit)..."):
                         bars_ = idt.get_bars(CachedClient(key), r0.params.kode, r0.params.tanggal_akhir)
                         st.session_state["ovn"] = ("ok", idt.statistik(bars_, fee=r0.params.fee_beli + r0.params.fee_jual))
                 except Exception as e:  # statistik intraday gagal tidak boleh mematikan kalkulator
-                    st.session_state["ovn"] = ("err", str(e) if isinstance(e, ad.AdimologyError) else f"Error tak terduga: {e}")
+                    st.session_state["ovn"] = ("err", str(e) if _adim_err(e) else f"Error tak terduga: {e}")
             tek_, fund_ = st.session_state.get("tek"), st.session_state.get("fund")
             rk_ = tek_[1] if tek_ and tek_[0] == "ok" else None
             f_ = fund_[1] if fund_ and fund_[0] == "ok" else None

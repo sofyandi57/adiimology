@@ -27,8 +27,8 @@ def ledger_url() -> str | None:
 
 
 @st.cache_resource(show_spinner=False)
-def _eng(url: str):
-    return lg.engine(url)
+def _eng(url: str, versi: int = 2):      # naikkan versi bila ada tabel baru (cache resource bertahan antar-deploy)
+    return apicache.siapkan(lg.engine(url))
 
 
 def _engine():
