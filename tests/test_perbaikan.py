@@ -38,3 +38,12 @@ def test_orderbook_dangkal_pakai_snapshot_historis():
     assert r2.lpp_sumber == "orderbook"
     r3 = ad.analyze(c, ad.Params(kode="MCAS", ob_auto=False))
     assert r3.lpp_sumber == "orderbook"
+
+
+def test_alasan_ringkas():
+    import keputusan_ui as ku
+    al = ["Bandarmologi: DISTRIBUSI TERINDIKASI (tingkat bukti: lemah)", "Jebakan: Bandar menjual 5.000 lot", "Teknikal: HINDARI (harga di bawah SL)",
+          "Fundamental: Rugi bersih 3 kuartal beruntun", "HINDARI karena bandar menunjukkan distribusi/penjualan (veto): x", "Ledger broker: status DISTRIBUTING (skor 3.0, confidence 0.8) = veto, bandar sedang keluar"]
+    t = ku.alasan_ringkas("HINDARI / JUAL", al)
+    assert "Bandar distribusi/menjual" in t and "Fundamental buruk" in t and "Teknikal HINDARI" in t and "Ledger: DISTRIBUTING" in t
+    assert ku.alasan_ringkas("TUNGGU", ["Bandarmologi: TIDAK KONKLUSIF (tingkat bukti: x)", "Teknikal: TUNGGU (jangan kejar)"]) == "Bandar: TIDAK KONKLUSIF · Teknikal: TUNGGU"

@@ -114,3 +114,39 @@ def tampil(r, mode: str) -> None:
         if st.button("➕ Lengkapi analisis (fundamental, dinamika bandar, Hengky, ritel)", type="primary"):
             st.session_state["_lengkapi"] = True
             st.rerun()
+
+
+def alasan_ringkas(kep: str, alasan: list[str], maks: int = 4) -> str:
+    """Alasan utama satu baris untuk tabel Histori: penyebab vonis (bukan seluruh rincian)."""
+    out = []
+    for a in alasan:
+        t = a.strip()
+        low = t.lower()
+        if kep.startswith("HINDARI"):
+            if "veto" in low and "bandar" in low and "ledger" not in low:
+                out.append("Bandar distribusi/menjual")
+            elif t.startswith("Ledger broker: status"):
+                out.append("Ledger: " + t.split("status ")[1].split(" ")[0] + " (bandar keluar)")
+            elif t.startswith("Fundamental: ") and "tidak ada tanda" not in low and "tidak terukur" not in low:
+                out.append("Fundamental buruk: " + t[len("Fundamental: "):][:70])
+            elif t.startswith("Teknikal: HINDARI"):
+                out.append("Teknikal HINDARI")
+            elif t.startswith("Konteks:") and "NOTASI" in t:
+                out.append("Notasi khusus BEI")
+        else:
+            if t.startswith("Bandarmologi: "):
+                out.append("Bandar: " + t[len("Bandarmologi: "):].split(" (")[0])
+            elif t.startswith("Teknikal: "):
+                out.append("Teknikal: " + t[len("Teknikal: "):].split(" (")[0])
+            elif t.startswith("BELI ditahan") or t.startswith("TUNGGU:"):
+                out.append(t.split(":")[0].replace("BELI ditahan", "BELI ditahan") + (": " + t.split(":", 1)[1].strip()[:60] if ":" in t else ""))
+            elif t.startswith("Fundamental: ") and "tidak ada tanda" not in low and "tidak terukur" not in low:
+                out.append("Fundamental: " + t[len("Fundamental: "):][:50])
+            elif t.startswith("Konteks:") or "notasi khusus" in low:
+                out.append(t[:60])
+    seen, uniq = set(), []
+    for x in out:
+        if x not in seen:
+            seen.add(x)
+            uniq.append(x)
+    return " · ".join(uniq[:maks]) or ("lihat laporan" if alasan else "-")

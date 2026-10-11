@@ -199,9 +199,16 @@ def _sa_url(url: str) -> str:
 
 
 @st.cache_resource(show_spinner=False)
-def histori_engine(url: str, versi: int = 3) -> sa.Engine:     # naikkan versi bila ada tabel baru (cache resource bertahan antar-deploy)
+def histori_engine(url: str, versi: int = 4) -> sa.Engine:     # naikkan versi bila ada tabel baru (cache resource bertahan antar-deploy)
     eng = sa.create_engine(_sa_url(url), pool_pre_ping=True)
     HIST_META.create_all(eng)
+    try:   # migrasi ringan: kolom alasan pada tabel keputusan yang sudah ada di Neon
+        kolom = {c["name"] for c in sa.inspect(eng).get_columns("histori_keputusan")}
+        if "alasan" not in kolom:
+            with eng.begin() as c:
+                c.execute(sa.text("ALTER TABLE histori_keputusan ADD COLUMN alasan TEXT"))
+    except Exception:
+        pass
     return eng
 
 
@@ -225,14 +232,16 @@ HIST_KEP = sa.Table(
     sa.Column("keputusan", sa.String(20)),
     sa.Column("tgl_data", sa.Date),
     sa.Column("harga", sa.Float), sa.Column("entry_lo", sa.Float), sa.Column("entry_hi", sa.Float),
-    sa.Column("zona_valid", sa.Boolean), sa.Column("sl", sa.Float), sa.Column("tp1", sa.Float), sa.Column("tp2", sa.Float))
+    sa.Column("zona_valid", sa.Boolean), sa.Column("sl", sa.Float), sa.Column("tp1", sa.Float), sa.Column("tp2", sa.Float),
+    sa.Column("alasan", sa.Text))
 
 
-def simpan_keputusan(kode: str, waktu: dt.datetime, mode: str, kep: str, r, rk: dict | None) -> None:
+def simpan_keputusan(kode: str, waktu: dt.datetime, mode: str, kep: str, r, rk: dict | None, alasan: str = "") -> None:
     """Angka rencana saat keputusan dibuat, untuk dievaluasi kemudian (rapor keputusan)."""
     row = dict(emiten=kode, waktu=waktu, mode=mode, keputusan=kep, tgl_data=r.tgl_akhir, harga=_num(r.harga),
                entry_lo=_num(rk["entry_lo"]) if rk else None, entry_hi=_num(rk["entry_hi"]) if rk else None, zona_valid=bool(rk["zona_valid"]) if rk else False,
-               sl=_num(rk["sl"]) if rk else None, tp1=_num(rk["tp1"]) if rk else None, tp2=_num(rk["tp2"]) if rk else None)
+               sl=_num(rk["sl"]) if rk else None, tp1=_num(rk["tp1"]) if rk else None, tp2=_num(rk["tp2"]) if rk else None,
+               alasan=alasan[:1500])
     url = histori_url()
     if url:
         try:
@@ -969,10 +978,10 @@ if submitted:
             st.session_state["export"] = exp
             try:   # simpan laporan lengkap agar bisa dipanggil ulang dari tab Histori
                 import keputusan_ui
-                kep_s = keputusan_ui.hitung(r0, "lengkap" if lengkap else "cepat")[0]
+                kep_s, alas_s = keputusan_ui.hitung(r0, "lengkap" if lengkap else "cepat")[:2]
                 w_s = st.session_state.get("_hist_waktu") or dt.datetime.now(dt.timezone.utc)
                 simpan_snapshot(r0.params.kode, w_s, "lengkap" if lengkap else "cepat", kep_s, exp.get("md"), exp.get("txt"))
-                simpan_keputusan(r0.params.kode, w_s, "lengkap" if lengkap else "cepat", kep_s, r0, rk_)
+                simpan_keputusan(r0.params.kode, w_s, "lengkap" if lengkap else "cepat", kep_s, r0, rk_, keputusan_ui.alasan_ringkas(kep_s, alas_s, 5))
             except Exception:
                 pass
 
@@ -1451,16 +1460,36 @@ with tab_hist:
     if hdf.empty:
         st.info("Belum ada histori. Setiap hasil **Hitung** dan batch Multi-saham tercatat di sini.")
     else:
-        st.dataframe(hdf, hide_index=True, width="stretch",
-                     column_config={c: st.column_config.NumberColumn(format="%,.0f")
-                                    for c in ["Target Adimologi", "Stop Loss", "Current Price"]})
+        vonis = {}
+        for x in daftar_keputusan():
+            w_ = pd.Timestamp(x["waktu"])
+            w_ = (w_.tz_localize("UTC") if w_.tzinfo is None else w_).tz_convert(ZoneInfo("Asia/Jakarta")).strftime("%Y-%m-%d %H:%M:%S WIB")
+            vonis[(x["emiten"], w_)] = (x.get("keputusan"), x.get("mode"), x.get("alasan"))
+        hdf = hdf.copy()
+        kk = [vonis.get((e_, w_), (None, None, None)) for e_, w_ in zip(hdf["Nama Emiten"], hdf["Tanggal & Waktu Pengecekan"])]
+        hdf.insert(1, "Vonis", [k[0] or "–" for k in kk])
+        hdf.insert(2, "Mode", [k[1] or "" for k in kk])
+        hdf["Alasan utama"] = [(k[2] or ("belum tercatat (hitungan sebelum fitur vonis atau batch Multi-saham)" if not k[0] else "-")) for k in kk]
+        terakhir = hdf[hdf["Vonis"] != "–"].drop_duplicates("Nama Emiten")
+        hindari = terakhir[terakhir["Vonis"].str.startswith("HINDARI")]
+        if len(hindari):
+            st.error("**Daftar HINDARI / JANGAN BELI (vonis terakhir per saham):** " + ", ".join(hindari["Nama Emiten"]), icon="🚫")
+        c_v = {"BELI": "background-color:#d1fae5;color:#065f46;font-weight:600", "TUNGGU": "background-color:#fef3c7;color:#92400e;font-weight:600",
+               "HINDARI / JUAL": "background-color:#fee2e2;color:#991b1b;font-weight:600"}
+        sty = hdf.style.map(lambda v: c_v.get(v, ""), subset=["Vonis"])
+        st.dataframe(sty, hide_index=True, width="stretch",
+                     column_config={**{c: st.column_config.NumberColumn(format="%,.0f") for c in ["Target Adimologi", "Stop Loss", "Current Price"]},
+                                    "Alasan utama": st.column_config.TextColumn(width="large")})
+        with st.expander("Vonis terakhir per saham (ringkas)"):
+            st.dataframe(terakhir[["Nama Emiten", "Vonis", "Alasan utama", "Tanggal & Waktu Pengecekan", "Current Price"]], hide_index=True, width="stretch")
         h1, h2, h3 = st.columns([1, 1, 1])
         h1.download_button("Unduh CSV", hdf.to_csv(index=False).encode(), "histori_adimology.csv", "text/csv")
         yakin = h3.checkbox("Yakin hapus semua")
         if h2.button("Hapus histori", disabled=not yakin):
             hapus_histori()
             st.rerun()
-        st.caption("Target Adimologi = target realistis. Menampilkan 1.000 catatan terbaru.")
+        st.caption("Vonis = keputusan aplikasi saat hitungan itu dibuat (aturan: bandar sebagai sensor risiko, fundamental, teknikal, konteks). Target Adimologi = target realistis "
+                   "dan hanya skenario, BUKAN dasar keputusan. Menampilkan 1.000 catatan terbaru.")
     st.markdown("#### 🎯 Rapor keputusan (hasil nyata keputusan masa lalu)")
     recs = daftar_keputusan()
     if not recs:
