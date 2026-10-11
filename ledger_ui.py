@@ -37,6 +37,9 @@ def _engine():
 
 
 def tampil(kode: str, api_key: str | None) -> None:
+    if not kode:
+        st.info("Isi kode saham di sidebar lalu klik **Hitung cepat** atau **Hitung lengkap**. Ledger memakai saham hasil perhitungan terakhir.")
+        return
     st.subheader(f"Ledger Broker — {kode}")
     st.caption("Catatan harian broker per saham yang DISIMPAN di database dan diperbarui bertahap. Penanda: **[OBS]** teramati, **[EST]** estimasi model, "
                "**[INF]** inferensi, **[DEC]** keputusan. Broker adalah perantara banyak nasabah: angka di sini adalah *proksi aliran* (NET_FLOW_PROXY), "

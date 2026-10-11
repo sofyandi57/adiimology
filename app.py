@@ -632,7 +632,7 @@ if not key:
     key = get_api_key()
 
 with st.sidebar.form("param"):
-    kode = st.text_input("Kode saham", value="MCAS", max_chars=4).upper()
+    kode = st.text_input("Kode saham", value="", max_chars=4, placeholder="mis. BBCA").upper().strip()
     window = st.slider("Window broker summary (hari bursa)", 1, 20, 5)
     pakai_tgl = st.checkbox("Pilih tanggal akhir sendiri")
     tgl_akhir = st.date_input("Tanggal akhir", value=dt.date.today(), disabled=not pakai_tgl)
@@ -670,7 +670,13 @@ with st.sidebar.form("param"):
                                       help="Aturan Hengky: trade hanya saham likuid. Ambang ini pilihan kami, bukan angka dari materi.")
         fee_b = st.number_input("Fee beli (%)", 0.0, 2.0, 0.15, 0.01) / 100
         fee_j = st.number_input("Fee jual (%)", 0.0, 2.0, 0.25, 0.01) / 100
-    submitted = st.form_submit_button("Hitung", type="primary", width="stretch")
+    sub_cepat = st.form_submit_button("⚡ Hitung cepat", width="stretch",
+                                      help="Hemat kuota (±5 panggilan API): harga, broker window, teknikal, bandar dasar. Tidak ada fundamental, Hengky, ritel, dinamika bandar.")
+    sub_lengkap = st.form_submit_button("Hitung lengkap", type="primary", width="stretch",
+                                        help="Semua modul (±12 panggilan API pertama kali; data lambat berubah dipakai ulang dari database).")
+lengkapi = bool(st.session_state.pop("_lengkapi", False))
+submitted = sub_cepat or sub_lengkap or lengkapi
+lengkap = sub_lengkap or lengkapi
 
 params = ad.Params(
     kode=kode, tanggal_akhir=tgl_akhir if pakai_tgl else None, window_hari=window, investor=investor,
@@ -682,6 +688,7 @@ params = ad.Params(
     modal=modal, risiko_pct=risiko, fee_beli=fee_b, fee_jual=fee_j, mode_bandar=mode_bandar, ob_multi=ob_multi)
 
 if submitted:
+    st.session_state["mode"] = "lengkap" if lengkap else "cepat"
     st.session_state.pop("tek", None)
     st.session_state.pop("fund", None)
     st.session_state.pop("export", None)
@@ -694,7 +701,9 @@ if submitted:
     st.session_state.pop("pra_open", None)
     st.session_state.pop("ritel", None)
     st.session_state.pop("dinamis", None)
-    if not key:
+    if not kode or len(kode) < 4:
+        st.session_state["res"] = ("err", "Isi kode saham 4 huruf di sidebar (tidak ada kode bawaan agar tidak salah hitung).")
+    elif not key:
         st.session_state["res"] = ("err", "Isi API key Invezgo di sidebar atau di st.secrets.")
     else:
         try:
@@ -714,7 +723,7 @@ if submitted:
                     st.session_state["tek"] = ("ok", tk.rekomendasi(df_tk, bv))
             except Exception as e:  # teknikal gagal tidak boleh mematikan kalkulator
                 st.session_state["tek"] = ("err", str(e) if isinstance(e, ad.AdimologyError) else f"Error tak terduga: {e}")
-            if aliran_on:
+            if aliran_on and lengkap:
                 try:
                     with st.spinner("Mengambil aliran asing, nego, konsistensi, afiliasi..."):
                         st.session_state["aliran"] = ("ok", ambil_aliran(CachedClient(key), r0))
@@ -723,19 +732,20 @@ if submitted:
             ali_, tek_n = st.session_state.get("aliran"), st.session_state.get("tek")
             rk_n = tek_n[1] if tek_n and tek_n[0] == "ok" else None
             src_n = rk_n["ind"] if rk_n else r0.chart
-            try:
-                with st.spinner("Menganalisa dinamika bandar (aliran harian, respons harga, absorpsi)..."):
-                    raw_d = dn.ambil(CachedClient(key), r0.params.kode, src_n["tgl"].tolist(), r0.params.broker_dikecualikan,
-                                     r0.params.investor, r0.params.market)
-                    st.session_state["dinamis"] = ("ok", dn.analisa(raw_d["inv"], r0.harga, r0.params.broker_dikecualikan, r0.konsentrasi,
-                                                                    hk.pv_baca(src_n), raw_d["summaries"], raw_d["inv200"]))
-            except Exception as e:  # dinamika bandar gagal tidak boleh mematikan kalkulator
-                st.session_state["dinamis"] = ("err", str(e) if isinstance(e, ad.AdimologyError) else f"Error tak terduga: {e}")
+            if lengkap:
+                try:
+                    with st.spinner("Menganalisa dinamika bandar (aliran harian, respons harga, absorpsi)..."):
+                        raw_d = dn.ambil(CachedClient(key), r0.params.kode, src_n["tgl"].tolist(), r0.params.broker_dikecualikan,
+                                         r0.params.investor, r0.params.market)
+                        st.session_state["dinamis"] = ("ok", dn.analisa(raw_d["inv"], r0.harga, r0.params.broker_dikecualikan, r0.konsentrasi,
+                                                                        hk.pv_baca(src_n), raw_d["summaries"], raw_d["inv200"]))
+                except Exception as e:  # dinamika bandar gagal tidak boleh mematikan kalkulator
+                    st.session_state["dinamis"] = ("err", str(e) if isinstance(e, ad.AdimologyError) else f"Error tak terduga: {e}")
             din_ = st.session_state.get("dinamis")
             st.session_state["nilai"] = bd.penilaian(r0, ali_[1] if ali_ and ali_[0] == "ok" else None, rk_n,
                                                      din_[1] if din_ and din_[0] == "ok" else None)
             st.session_state["vol"] = bd.volume_rata(src_n)
-            if b200_on:
+            if b200_on and lengkap:
                 try:
                     with st.spinner(f"Menganalisa bandar {int(b200_hari)} hari terakhir..."):
                         st.session_state["b200"] = ("ok", bd.bandar_panjang(
@@ -744,31 +754,34 @@ if submitted:
                             ritel_codes=tuple(c.strip().upper() for c in ritel_in.split(",") if c.strip())))
                 except Exception as e:  # bandar jangka panjang gagal tidak boleh mematikan kalkulator
                     st.session_state["b200"] = ("err", str(e) if isinstance(e, ad.AdimologyError) else f"Error tak terduga: {e}")
-            try:
-                sid_ = hk.sid_trend(CachedClient(key), r0.params.kode)
-            except Exception:  # endpoint SID bisa tidak tersedia di paket API tertentu
-                sid_ = None
+            sid_ = None
+            if lengkap:
+                try:
+                    sid_ = hk.sid_trend(CachedClient(key), r0.params.kode)
+                except Exception:  # endpoint SID bisa tidak tersedia di paket API tertentu
+                    sid_ = None
             ritel_codes = tuple(c.strip().upper() for c in ritel_in.split(",") if c.strip())
             b2_ = st.session_state.get("b200")
             ret20_ = float(src_n["close"].iloc[-1] / src_n["close"].iloc[-21] - 1) if len(src_n) > 21 else None
             st.session_state["ritel"] = al.minat_ritel(sid_, al.ritel_flow(r0.bs, ritel_codes, r0.harga),
                                                        b2_[1].get("ritel") if b2_ and b2_[0] == "ok" else None, ret20_)
-            try:
-                with st.spinner("Memeriksa aturan Hengky..."):
-                    st.session_state["hengky"] = ("ok", hk.analisa(CachedClient(key), r0, rk_n, st.session_state["nilai"], min_nilai_m, sid_))
-            except Exception as e:  # aturan Hengky gagal tidak boleh mematikan kalkulator
-                st.session_state["hengky"] = ("err", str(e) if isinstance(e, ad.AdimologyError) else f"Error tak terduga: {e}")
-            try:
-                with st.spinner("Mengambil laporan keuangan..."):
-                    st.session_state["fund"] = ("ok", ambil_fundamental(CachedClient(key), r0.params.kode, r0.harga))
-            except Exception as e:  # fundamental gagal tidak boleh mematikan kalkulator
-                st.session_state["fund"] = ("err", str(e) if isinstance(e, ad.AdimologyError) else f"Error tak terduga: {e}")
-            try:
-                with st.spinner("Menghitung statistik BPJP/BSJP (candle 30 menit)..."):
-                    bars_ = idt.get_bars(CachedClient(key), r0.params.kode, r0.params.tanggal_akhir)
-                    st.session_state["ovn"] = ("ok", idt.statistik(bars_, fee=r0.params.fee_beli + r0.params.fee_jual))
-            except Exception as e:  # statistik intraday gagal tidak boleh mematikan kalkulator
-                st.session_state["ovn"] = ("err", str(e) if isinstance(e, ad.AdimologyError) else f"Error tak terduga: {e}")
+            if lengkap:
+                try:
+                    with st.spinner("Memeriksa aturan Hengky..."):
+                        st.session_state["hengky"] = ("ok", hk.analisa(CachedClient(key), r0, rk_n, st.session_state["nilai"], min_nilai_m, sid_))
+                except Exception as e:  # aturan Hengky gagal tidak boleh mematikan kalkulator
+                    st.session_state["hengky"] = ("err", str(e) if isinstance(e, ad.AdimologyError) else f"Error tak terduga: {e}")
+                try:
+                    with st.spinner("Mengambil laporan keuangan..."):
+                        st.session_state["fund"] = ("ok", ambil_fundamental(CachedClient(key), r0.params.kode, r0.harga))
+                except Exception as e:  # fundamental gagal tidak boleh mematikan kalkulator
+                    st.session_state["fund"] = ("err", str(e) if isinstance(e, ad.AdimologyError) else f"Error tak terduga: {e}")
+                try:
+                    with st.spinner("Menghitung statistik BPJP/BSJP (candle 30 menit)..."):
+                        bars_ = idt.get_bars(CachedClient(key), r0.params.kode, r0.params.tanggal_akhir)
+                        st.session_state["ovn"] = ("ok", idt.statistik(bars_, fee=r0.params.fee_beli + r0.params.fee_jual))
+                except Exception as e:  # statistik intraday gagal tidak boleh mematikan kalkulator
+                    st.session_state["ovn"] = ("err", str(e) if isinstance(e, ad.AdimologyError) else f"Error tak terduga: {e}")
             tek_, fund_ = st.session_state.get("tek"), st.session_state.get("fund")
             rk_ = tek_[1] if tek_ and tek_[0] == "ok" else None
             f_ = fund_[1] if fund_ and fund_[0] == "ok" else None
@@ -828,45 +841,83 @@ if exp:
         if f"{jenis}_err" in exp:
             st.sidebar.error(f"Gagal membuat {jenis.upper()}: {exp[f'{jenis}_err']}")
 
+_eng_u = db_engine()
+_u = apicache.pemakaian(_eng_u) if _eng_u is not None else None
+if _u and _u["req"] is not None:
+    st.sidebar.divider()
+    st.sidebar.progress(min(_u["req"] / _u["kuota"], 1.0), text=f"Kuota API {_u['bulan']}: {_u['req']:,} / {_u['kuota']:,}")
+    st.sidebar.caption(f"Dihemat cache database: {_u['hit']:,} permintaan · cache {_u['entri']:,} entri ({_u['ukuran_mb']} MB). "
+                       "Dihitung dari permintaan lewat aplikasi ini saja.")
+
 # ------------------------------------------------------------------------------- main
 st.title("Adimology Calculator")
 st.caption("Penilaian bandarmologi berbasis bukti (aliran broker, asing, nego, fase harga) plus skenario target "
            "Adimology dari data Invezgo. Edukasi, bukan ajakan transaksi. Semua aturan heuristik; target Adimology "
            "tidak terbukti unggul di backtest.")
 
-tab_main, tab_rek, tab_hk, tab_fund, tab_broker, tab_ledger, tab_ob, tab_sens, tab_multi, tab_hist, tab_rumus = st.tabs(
-    ["Ringkasan", "Rekomendasi", "Aturan Hengky", "Fundamental", "Broker", "Ledger Broker", "Orderbook", "Sensitivitas", "Multi-saham", "Histori", "Rumus & catatan"])
-
+tab_kep, tab_tek, tab_bandar, tab_fund, tab_alat = st.tabs(
+    ["🎯 Keputusan", "📊 Teknikal & Rencana", "🏦 Bandar & Ledger", "📑 Fundamental", "🧰 Alat & Histori"])
+tab_main = tab_kep
 state = st.session_state.get("res")
+kode_aktif = state[1].params.kode if state and state[0] == "ok" else ""
+
+
+def kepala() -> None:
+    """Penegasan saham yang sedang dihitung di setiap tab (mencegah salah baca karena kode lama/bawaan)."""
+    s_ = st.session_state.get("res")
+    if s_ and s_[0] == "ok":
+        r_ = s_[1]
+        nama_ = ((st.session_state.get("fund") or (None, None))[1] or {}).get("nama") if (st.session_state.get("fund") or (None,))[0] == "ok" else None
+        st.markdown(f"##### 📌 Saham dihitung: **{r_.params.kode}**" + (f" — {nama_}" if nama_ else "") +
+                    f" · harga {r_.harga:,.0f} · data s/d {r_.tgl_akhir} · mode **{st.session_state.get('mode', 'lengkap')}**")
+        if kode and kode != r_.params.kode:
+            st.warning(f"Sidebar berisi **{kode}**, tetapi hasil di tab ini untuk **{r_.params.kode}**. Klik Hitung untuk menghitung {kode}.")
+    else:
+        st.info("Belum ada saham dihitung. Isi kode saham di sidebar lalu klik **Hitung cepat** atau **Hitung lengkap**.")
+
+
+with tab_tek:
+    kepala()
+    tab_rek, tab_hk, tab_ob = st.tabs(["Rekomendasi", "Aturan Hengky", "Orderbook"])
+with tab_bandar:
+    kepala()
+    tab_pen, tab_broker, tab_ledger = st.tabs(["Penilaian bandar", "Broker & aliran", "Ledger Broker"])
+with tab_alat:
+    tab_hist, tab_multi, tab_sens, tab_rumus = st.tabs(["Histori", "Multi-saham", "Sensitivitas", "Rumus & catatan"])
+
 with tab_main:
+    kepala()
     if not state:
-        st.info("Atur parameter di sidebar lalu klik **Hitung**.")
+        pass
     elif state[0] == "err":
         st.error(state[1])
     else:
         r: ad.Result = state[1]
-        tampil_penilaian(r, st.session_state.get("nilai") or bd.penilaian(r))
-        tampil_volume_dan_b200(r)
-        st.markdown("#### 🧮 Skenario target Adimology (belum terbukti)")
-        st.info(f"**{r.params.kode} → {r.verdict}** (skenario, bukan sinyal)" + "".join(f"\n\n- {a}" for a in r.alasan),
-                icon="🧮")
-        c = st.columns(6)
-        c[0].metric("Harga", fmt(r.harga))
-        c[1].metric(f"Avg bandar ({r.bandar['code']})", fmt(r.bandar["avg"], 1), f"{r.floating:+.1%} floating", delta_color="normal")
-        c[2].metric("Dasar (avg + a)", fmt(r.calc["dasar"], 1))
-        c[3].metric("Target realistis", fmt(r.calc["t_real_r"]), f"{r.calc['upside_real']:+.1%}")
-        c[4].metric("Target max", fmt(r.calc["t_max_r"]), f"{r.calc['upside_max']:+.1%}")
-        c[5].metric("SL (low window)", fmt(r.plan["sl"]), f"R/R {r.plan['rr']:.2f}" if pd.notna(r.plan["rr"]) else None, delta_color="off")
-        st.markdown(f"**Rentang skenario:** {fmt(r.calc['t_real_r'])} – {fmt(r.calc['t_max_r'])} "
-                    f"({r.calc['upside_real']:+.1%} s/d {r.calc['upside_max']:+.1%}). Perlakukan sebagai *potensi*, bukan "
-                    "probabilitas.")
-        with st.expander("Hasil backtest metode Adimology"):
-            st.write(bd.HASIL_BACKTEST)
-            st.caption("Uji masih terbatas (4 saham, satu periode). Detail: backtest/README.md di repo.")
-        st.plotly_chart(make_chart(r), width="stretch")
-        st.caption(f"Window {r.tgl_awal} s/d {r.tgl_akhir} ({r.params.window_hari} hari bursa) · "
-                   f"barang bandar {fmt(r.calc['barang'])} lot · lot per papan {fmt(r.lot_per_papan)} ({r.lpp_sumber}) · "
-                   f"p = {r.calc['p']:.2f} papan · level pembatal: close di bawah {fmt(r.plan['sl'])}")
+        import keputusan_ui
+        keputusan_ui.tampil(r, st.session_state.get("mode", "lengkap"))
+        with tab_pen:
+            tampil_penilaian(r, st.session_state.get("nilai") or bd.penilaian(r))
+            tampil_volume_dan_b200(r)
+        with st.expander("🧮 Skenario target Adimology (belum terbukti; bukan dasar keputusan)", expanded=False):
+            st.info(f"**{r.params.kode} → {r.verdict}** (skenario, bukan sinyal)" + "".join(f"\n\n- {a}" for a in r.alasan),
+                    icon="🧮")
+            c = st.columns(6)
+            c[0].metric("Harga", fmt(r.harga))
+            c[1].metric(f"Avg bandar ({r.bandar['code']})", fmt(r.bandar["avg"], 1), f"{r.floating:+.1%} floating", delta_color="normal")
+            c[2].metric("Dasar (avg + a)", fmt(r.calc["dasar"], 1))
+            c[3].metric("Target realistis", fmt(r.calc["t_real_r"]), f"{r.calc['upside_real']:+.1%}")
+            c[4].metric("Target max", fmt(r.calc["t_max_r"]), f"{r.calc['upside_max']:+.1%}")
+            c[5].metric("SL (low window)", fmt(r.plan["sl"]), f"R/R {r.plan['rr']:.2f}" if pd.notna(r.plan["rr"]) else None, delta_color="off")
+            st.markdown(f"**Rentang skenario:** {fmt(r.calc['t_real_r'])} – {fmt(r.calc['t_max_r'])} "
+                        f"({r.calc['upside_real']:+.1%} s/d {r.calc['upside_max']:+.1%}). Perlakukan sebagai *potensi*, bukan "
+                        "probabilitas.")
+            with st.expander("Hasil backtest metode Adimology"):
+                st.write(bd.HASIL_BACKTEST)
+                st.caption("Uji masih terbatas (4 saham, satu periode). Detail: backtest/README.md di repo.")
+            st.plotly_chart(make_chart(r), width="stretch")
+            st.caption(f"Window {r.tgl_awal} s/d {r.tgl_akhir} ({r.params.window_hari} hari bursa) · "
+                       f"barang bandar {fmt(r.calc['barang'])} lot · lot per papan {fmt(r.lot_per_papan)} ({r.lpp_sumber}) · "
+                       f"p = {r.calc['p']:.2f} papan · level pembatal: close di bawah {fmt(r.plan['sl'])}")
         st.subheader("Kalkulator posisi")
         tek_p = st.session_state.get("tek")
         rk_pos = tek_p[1] if tek_p and tek_p[0] == "ok" else None
@@ -1196,7 +1247,7 @@ with tab_multi:
 
 with tab_ledger:
     import ledger_ui
-    ledger_ui.tampil(kode, key)
+    ledger_ui.tampil(kode_aktif, key)
 
 with tab_hist:
     hdf = load_histori()

@@ -28,6 +28,8 @@ def open_app(monkeypatch, email=EMAIL, pw=PW):
     [t for t in at.text_input if t.label == "Email"][0].set_value(email)
     [t for t in at.text_input if t.label == "Password"][0].set_value(pw)
     [b for b in at.button if b.label == "Masuk"][0].click().run()
+    if at.text_input and [t for t in at.text_input if t.label == "Kode saham"]:
+        [t for t in at.text_input if t.label == "Kode saham"][0].set_value("MCAS")
     return at
 
 
@@ -36,13 +38,13 @@ def test_login_required(monkeypatch):
     at = AppTest.from_file(APP, default_timeout=60).run()
     assert not at.exception
     assert [t.label for t in at.text_input] == ["Email", "Password"]
-    assert not [b for b in at.button if b.label == "Hitung"]
+    assert not [b for b in at.button if b.label == "Hitung lengkap"]
 
 
 def test_login_wrong_password(monkeypatch):
     at = open_app(monkeypatch, pw="salah")
     assert any("salah" in e.value for e in at.error)
-    assert not [b for b in at.button if b.label == "Hitung"]
+    assert not [b for b in at.button if b.label == "Hitung lengkap"]
 
 def test_app_runs_and_computes(monkeypatch, tmp_path):
     monkeypatch.setenv("HISTORI_DB_URL", f"sqlite:///{tmp_path / 'histori.db'}")
@@ -54,7 +56,7 @@ def test_app_runs_and_computes(monkeypatch, tmp_path):
     monkeypatch.setenv("INVEZGO_API_KEY", "dummy")
     at = open_app(monkeypatch)
     assert not at.exception
-    [b for b in at.button if b.label == "Hitung"][0].click().run()
+    [b for b in at.button if b.label == "Hitung lengkap"][0].click().run()
     assert not at.exception, [e.value for e in at.exception]
     assert any("TIDAK ADA SINYAL" in w.value and "skenario" in w.value for w in at.info)   # Adimology = skenario
     labels = [m.label for m in at.metric]
@@ -152,7 +154,7 @@ def test_b200_success_renders(monkeypatch):
             "konsentrasi": {"status": "TERSEBAR"}}
     monkeypatch.setattr(bd, "bandar_panjang", lambda *a, **k: fake)
     at = open_app(monkeypatch)
-    [b for b in at.button if b.label == "Hitung"][0].click().run()
+    [b for b in at.button if b.label == "Hitung lengkap"][0].click().run()
     assert not at.exception, [e.value for e in at.exception]
     assert at.session_state["b200"][0] == "ok"
     assert any("harga di bawah estimasi modal" in w.value for w in at.warning)
@@ -171,7 +173,7 @@ def test_dinamika_framework_renders_and_feeds_report(monkeypatch):
     flows = {"AA": np.full(60, 30_000.0) + rng.normal(0, 3000, 60), "BB": np.full(60, 10_000.0), "SS": np.full(60, -8_000.0)}
     monkeypatch.setattr(dn, "ambil", lambda *a, **k: dict(inv=_data(price, flows), inv200=None, summaries={20: _summ(float(price[-20])), 60: _summ(float(price[0]))}))
     at = open_app(monkeypatch)
-    [b for b in at.button if b.label == "Hitung"][0].click().run()
+    [b for b in at.button if b.label == "Hitung lengkap"][0].click().run()
     assert not at.exception, [e.value for e in at.exception]
     d = at.session_state["dinamis"]
     assert d[0] == "ok" and d[1]["kategori"] in dn.KATEGORI and at.session_state["nilai"]["dinamis"] is d[1]
@@ -180,3 +182,50 @@ def test_dinamika_framework_renders_and_feeds_report(monkeypatch):
     txt = at.session_state["export"]["txt"]
     assert b"## BANDARMOLOGI: KERANGKA BUKTI" in txt and b"bukti_mendukung=" in txt and b"kondisi_pembatalan=" in txt and b"terkonfirmasi_statistik=TIDAK" in txt
     assert at.session_state["export"]["pdf"][:4] == b"%PDF" and at.session_state["export"]["xlsx"][:2] == b"PK"
+
+
+def _fake_api(monkeypatch):
+    fc = mcas()
+    calls = []
+
+    def fake_get(url, headers=None, params=None, timeout=None):
+        path = url.replace(ad.BASE_URL, "")
+        calls.append(path)
+        return R(fc.get(path, params))
+    monkeypatch.setattr(requests, "get", fake_get)
+    monkeypatch.setenv("INVEZGO_API_KEY", "dummy")
+    return calls
+
+
+def test_kode_kosong_ditolak(monkeypatch):
+    _fake_api(monkeypatch)
+    at = open_app(monkeypatch)
+    [t for t in at.text_input if t.label == "Kode saham"][0].set_value("")
+    [b for b in at.button if b.label == "⚡ Hitung cepat"][0].click().run()
+    assert any("kode saham" in e.value.lower() for e in at.error)
+
+
+def test_mode_cepat_hemat_dan_lengkapi(monkeypatch):
+    calls = _fake_api(monkeypatch)
+    at = open_app(monkeypatch)
+    calls.clear()
+    [b for b in at.button if b.label == "⚡ Hitung cepat"][0].click().run()
+    assert not at.exception, [e.value for e in at.exception]
+    n_cepat = len(calls)
+    assert n_cepat <= 8 and not any("financial-statement" in c for c in calls)
+    assert at.session_state["mode"] == "cepat" and "fund" not in at.session_state
+    assert any("Mode **cepat**" in c.value for c in at.caption)
+    assert any("MCAS" in m.value and "Saham dihitung" in m.value for m in at.markdown)
+    [b for b in at.button if b.label.startswith("➕ Lengkapi")][0].click().run()
+    assert not at.exception, [e.value for e in at.exception]
+    assert at.session_state["mode"] == "lengkap" and at.session_state["fund"][0] == "ok"
+    assert any("financial-statement" in c for c in calls) and len(calls) > n_cepat
+
+
+def test_kartu_keputusan_tampil(monkeypatch):
+    _fake_api(monkeypatch)
+    at = open_app(monkeypatch)
+    [b for b in at.button if b.label == "Hitung lengkap"][0].click().run()
+    assert not at.exception
+    assert any(("→ TUNGGU" in x.value or "→ HINDARI" in x.value or "→ BELI" in x.value) for x in list(at.success) + list(at.warning) + list(at.error))
+    assert {t.label for t in at.tabs} >= {"🎯 Keputusan", "📊 Teknikal & Rencana", "🏦 Bandar & Ledger", "📑 Fundamental", "🧰 Alat & Histori"}

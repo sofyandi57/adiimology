@@ -189,10 +189,14 @@ def test_ui_tab_ledger(tmp_path, monkeypatch):
     monkeypatch.setenv("LEDGER_DB_URL", url)
     e = lg.engine(url)
     lg.perbarui(Fake(), e, "MCAS", hari_bursa=70, max_calls=100, now=NOW, jeda=0)
+    import requests
+    from fakes import mcas
+    fc = mcas()
+    monkeypatch.setattr(requests, "get", lambda url, headers=None, params=None, timeout=None: ta.R(fc.get(url.replace(ad.BASE_URL, ""), params)))
+    monkeypatch.setenv("INVEZGO_API_KEY", "dummy")
     at = ta.open_app(monkeypatch)
-    assert not at.exception
-    at.run()
-    assert not at.exception
+    [b for b in at.button if b.label == "⚡ Hitung cepat"][0].click().run()
+    assert not at.exception, [e.value for e in at.exception]
     md = " ".join([m.value for m in at.markdown] + [m.value for m in at.subheader])
     assert "Ledger Broker" in md and "Cakupan" in md and "Estimasi posisi" in md
     assert any("NET_FLOW_PROXY" in str(c.value) for c in at.caption) or "NET_FLOW_PROXY" in md
