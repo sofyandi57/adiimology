@@ -192,11 +192,12 @@ class Result:
 def get_chart(client: InvezgoClient, kode: str, tanggal_akhir: dt.date | None) -> pd.DataFrame:
     end = tanggal_akhir or dt.date.today()
     raw = client.get(f"/analysis/chart/stock/{kode}",
-                     {"from": (end - dt.timedelta(days=90)).isoformat(), "to": end.isoformat()})
+                     {"from": (end - dt.timedelta(days=450)).isoformat(), "to": end.isoformat()})   # rentang SAMA dengan teknikal/ledger -> satu panggilan API dipakai bersama (cache)
     df = pd.DataFrame(raw)
     if df.empty:
         raise AdimologyError(f"Tidak ada data harga untuk {kode}. Periksa kode saham.")
     df["tgl"] = (pd.to_datetime(df["date"], utc=True) + pd.Timedelta(hours=7)).dt.date
+    df = df[df["tgl"] >= df["tgl"].max() - dt.timedelta(days=90)]                  # isi tetap 90 hari terakhir seperti sebelumnya
     for c in ["open", "high", "low", "close", "volume"]:
         df[c] = pd.to_numeric(df[c], errors="coerce")
     df = df.sort_values("tgl").reset_index(drop=True)

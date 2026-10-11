@@ -83,7 +83,35 @@ def db_engine():
 
 @st.cache_data(ttl=300, show_spinner=False)
 def _cached_fetch(path: str, params_items: tuple, _key: str):
-    return apicache.ambil(db_engine(), path, params_items, _key)
+    eng = db_engine()
+    p = dict(params_items)
+    if eng is None:
+        return ad.fetch_json(_key, path, params_items)
+    kode_p = path.rsplit("/", 1)[-1]
+    ringkasan = "/summary/stock/" in path and p.get("investor", "all") == "all" and p.get("market", "RG") == "RG"
+    try:
+        if ringkasan and p.get("from") == p.get("to"):    # satu hari: ledger (permanen bila final)
+            import ledger as lg_
+            return lg_.summary_hari_payload(apicache.DbClient(_key, eng), eng, kode_p, dt.date.fromisoformat(p["from"]))
+        if ringkasan:                                       # rentang: dari ledger bila seluruh hari sudah final, tanpa API
+            import ledger as lg_
+            hasil = lg_.agregat_summary(eng, kode_p, p["from"], p["to"])
+            if hasil is not None:
+                apicache._hitung(eng, 0, 1)
+                return hasil
+    except (ad.AdimologyError, ad.ParamDitolak):
+        raise
+    except Exception:
+        pass
+    n0 = ad.REQ_COUNT[0]
+    hasil = apicache.ambil(eng, path, params_items, _key)
+    if "/chart/stock/" in path and ad.REQ_COUNT[0] > n0 and isinstance(hasil, list) and len(hasil) > 150:
+        try:
+            import ledger as lg_
+            lg_.simpan_chart(eng, kode_p, hasil)
+        except Exception:
+            pass
+    return hasil
 
 
 @st.cache_data(ttl=15, show_spinner=False)

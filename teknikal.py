@@ -22,6 +22,10 @@ def get_chart_panjang(client: ad.InvezgoClient, kode: str, tanggal_akhir: dt.dat
     end = tanggal_akhir or dt.date.today()
     raw = client.get(f"/analysis/chart/stock/{kode}",
                      {"from": (end - dt.timedelta(days=hari_kalender)).isoformat(), "to": end.isoformat()})
+    return parse_chart(raw, tanggal_akhir)
+
+
+def parse_chart(raw, tanggal_akhir: dt.date | None = None) -> pd.DataFrame:
     df = pd.DataFrame(raw)
     if df.empty:
         raise ad.AdimologyError(f"Tidak ada data harga untuk {kode}.")

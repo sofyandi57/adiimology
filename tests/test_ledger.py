@@ -213,3 +213,41 @@ def test_ekspor_ai_txt_md_csv(hasil):
     assert lc.csv_ai(hasil).startswith(b"trade_date") and b"NET_FLOW_PROXY" in lc.csv_ai(hasil)
     assert "N/A" in "\n".join(lc.baris_ai(None, "TST"))
     assert lc.csv_ai(None).startswith(b"info")
+
+
+def test_agregat_summary_dari_ledger(eng):
+    import pandas as pd
+    c = Fake()
+    lg.perbarui(c, eng, "TST", hari_bursa=30, max_calls=100, now=NOW, jeda=0)
+    a, z = HARI[-25], HARI[-1]
+    out = lg.agregat_summary(eng, "TST", a, z)
+    assert out is not None
+    # sama dengan jumlah dari respons harian asli
+    for br in ("AA", "BB"):
+        exp_buy = sum(r["buy_volume"] for d in HARI[-25:] for r in c.daily[d] if r["code"] == br)
+        got = [r for r in out if r["code"] == br][0]
+        assert got["buy_volume"] == exp_buy and got["net_volume"] == got["buy_volume"] - got["sell_volume"]
+    df = pd.DataFrame(out)
+    assert {"code", "buy_avg", "net_volume", "net_value"} <= set(df.columns)
+    assert lg.agregat_summary(eng, "TST", HARI[-60], z) is None          # sebelum cakupan ledger
+    assert lg.agregat_summary(eng, "TST", a, dt.date(2026, 10, 12)) is not None   # tanggal setelah hari bursa terakhir tidak memengaruhi
+    assert lg.agregat_summary(eng, "XXX", a, z) is None
+
+
+def test_summary_hari_payload_tumbuhkan_ledger(eng):
+    c = Fake()
+    d = HARI[-3]
+    p1 = lg.summary_hari_payload(c, eng, "TST", d, NOW)
+    n = c.calls
+    p2 = lg.summary_hari_payload(c, eng, "TST", d, NOW)
+    assert p1 == p2 and c.calls == n                       # kedua kali dari ledger, 0 API
+    b, _ = lg.muat(eng, "TST")
+    assert set(b.trade_date) == {d} and len(b) == 3
+
+
+def test_simpan_chart_mengisi_pasar(eng):
+    c = Fake()
+    raw = c.get("/analysis/chart/stock/TST", {})
+    assert lg.simpan_chart(eng, "TST", raw, NOW) == len(HARI)
+    _, m = lg.muat(eng, "TST")
+    assert len(m) == len(HARI)

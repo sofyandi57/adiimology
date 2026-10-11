@@ -151,7 +151,7 @@ def ambil_hari(client, eng, kode: str, tgl: dt.date, now: dt.datetime | None = N
     return dict(tgl=tgl, n_broker=len(rows), api=dari_api, final=final)
 
 
-def ambil_pasar(client, eng, kode: str, hari_kalender: int = 420, now: dt.datetime | None = None) -> pd.DataFrame:
+def ambil_pasar(client, eng, kode: str, hari_kalender: int = 450, now: dt.datetime | None = None) -> pd.DataFrame:
     """OHLCV harian (kalender bursa + harga penutupan); disesuaikan untuk split agar sebanding. Satu panggilan API."""
     t0 = time.time()
     try:
@@ -309,3 +309,61 @@ def validasi(b: pd.DataFrame, m: pd.DataFrame, log: pd.DataFrame | None = None, 
     p = [c for c in cek if c["status"] == "PERINGATAN"]
     return dict(status="GAGAL" if g else "PERINGATAN" if p else "OK", cek=cek, n_gagal=len(g), n_peringatan=len(p), tanggal_hilang=hilang,
                 cakupan=dict(hari=len(tgl_ledger), awal=awal, akhir=max(tgl_ledger), n_broker=int(b["broker_code"].nunique())))
+
+
+# ------------------------------------------------------- ledger sebagai sumber (hemat API)
+def agregat_summary(eng, kode: str, dari, sampai) -> list[dict] | None:
+    """Respons ala /summary/stock untuk rentang [dari, sampai] dihitung dari ledger tersimpan; None bila ledger belum menutup SELURUH hari bursa
+    dalam rentang itu dengan data final (maka pemanggil jatuh ke API). Frekuensi transaksi tidak disimpan ledger -> 0 (tidak dipakai app)."""
+    kode = kode.strip().upper()
+    dari, sampai = dt.date.fromisoformat(str(dari)[:10]), dt.date.fromisoformat(str(sampai)[:10])
+    try:
+        with eng.connect() as c:
+            hari = {r[0] for r in c.execute(sa.select(T_MARKET.c.trade_date).where(sa.and_(
+                T_MARKET.c.ticker == kode, T_MARKET.c.trade_date >= dari, T_MARKET.c.trade_date <= sampai)))}
+            if not hari or min(hari) > dari + dt.timedelta(days=5):
+                return None
+            final = {r[0] for r in c.execute(sa.select(T_RAW.c.trade_date).where(sa.and_(
+                T_RAW.c.ticker == kode, T_RAW.c.endpoint == EP_SUMMARY, T_RAW.c.is_final == True,  # noqa: E712
+                T_RAW.c.trade_date >= dari, T_RAW.c.trade_date <= sampai)))}
+            if not hari <= final:
+                return None
+            rows = c.execute(sa.select(T_BROKER).where(sa.and_(
+                T_BROKER.c.ticker == kode, T_BROKER.c.trade_date >= dari, T_BROKER.c.trade_date <= sampai))).mappings().all()
+    except Exception:
+        return None
+    ag: dict[str, dict] = {}
+    for r in rows:
+        a = ag.setdefault(r["broker_code"], dict(code=r["broker_code"], name=r["broker_name"], bs=0.0, ss=0.0, bv=0.0, sv=0.0))
+        a["bs"] += r["buy_shares"] or 0.0
+        a["ss"] += r["sell_shares"] or 0.0
+        a["bv"] += r["buy_value"] or 0.0
+        a["sv"] += r["sell_value"] or 0.0
+    out = []
+    for a in ag.values():
+        out.append(dict(code=a["code"], name=a["name"], buy_freq=0, buy_volume=a["bs"], buy_value=a["bv"], sell_freq=0, sell_volume=a["ss"], sell_value=a["sv"],
+                        buy_avg=(a["bv"] / a["bs"] if a["bs"] else 0), sell_avg=(a["sv"] / a["ss"] if a["ss"] else 0),
+                        net_value=a["bv"] - a["sv"], net_volume=a["bs"] - a["ss"], net_freq=0))
+    return out
+
+
+def summary_hari_payload(client, eng, kode: str, tgl: dt.date, now: dt.datetime | None = None):
+    """Respons ringkasan broker satu hari: dari ledger bila sudah final (0 panggilan API), jika tidak diambil & disimpan (ledger tumbuh otomatis)."""
+    kode = kode.strip().upper()
+    key = f"{tgl}|all|RG"
+    ada = _raw_ada(eng, kode, EP_SUMMARY, key)
+    if not (ada and ada.is_final):
+        ambil_hari(client, eng, kode, tgl, now)
+        ada = _raw_ada(eng, kode, EP_SUMMARY, key)
+    return json.loads(ada.payload)
+
+
+def simpan_chart(eng, kode: str, raw, now: dt.datetime | None = None) -> int:
+    """Simpan OHLCV (disesuaikan split) dari respons chart ke tabel pasar ledger agar cakupan hari bursa diketahui."""
+    df = tk.parse_chart(raw)
+    ret = _utc_naive(now)
+    rows = [dict(ticker=kode.strip().upper(), trade_date=r.tgl, data_source="invezgo_chart", open=float(r.open), high=float(r.high), low=float(r.low),
+                 close=float(r.close), volume_shares=float(r.volume), retrieved_at=ret) for r in df.itertuples()]
+    with eng.begin() as c:
+        upsert(c, T_MARKET, rows, ["ticker", "trade_date", "data_source"])
+    return len(rows)
