@@ -90,6 +90,11 @@ def test_ba_dari_label_aliran():
 
 def test_ca_kata_kunci():
     assert sk.skor_ca(ktx_())["nilai"] == 0.75
+    # "dividend" mengandung "dividen": tetap SATU kategori (bug lama menghitungnya dua -> 1,0)
+    satu = sk.skor_ca(ktx_(disclosure=dict(status="ok", items=[dict(judul="Jadwal pembagian dividen", risiko=[]), dict(judul="Cash dividend schedule", risiko=[])])))
+    assert satu["nilai"] == 0.75 and "dividen" in satu["bukti"][0]
+    dua = sk.skor_ca(ktx_(disclosure=dict(status="ok", items=[dict(judul="Jadwal pembagian dividen", risiko=[]), dict(judul="Rencana buyback saham", risiko=[])])))
+    assert dua["nilai"] == 1.0
     dil = sk.skor_ca(ktx_(disclosure=dict(status="ok", items=[dict(judul="Rencana Penambahan Modal dengan HMETD", risiko=[])])))
     assert dil["nilai"] == 0.25
     berat = sk.skor_ca(ktx_(news=dict(status="ok", items=[dict(judul="Permohonan PKPU terhadap emiten", risiko=["pkpu"])])))

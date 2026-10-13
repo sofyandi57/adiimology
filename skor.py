@@ -336,7 +336,7 @@ def skor_ba(flow: dict | None, ledger: dict | None = None) -> dict:
 # =============================================================== CA (aksi korporasi & keterbukaan)
 CA_BERAT = ("pkpu", "pailit", "delisting", "suspen", "gagal bayar", "penghentian sementara")
 CA_DILUSI = ("hmetd", "right issue", "rights issue", "private placement", "penambahan modal", "obligasi wajib konversi")
-CA_POSITIF = ("buyback", "pembelian kembali", "dividen", "dividend")
+CA_POSITIF = {"buyback": ("buyback", "pembelian kembali"), "dividen": ("dividen", "dividend")}   # dihitung per KATEGORI (dividen & dividend = satu kategori)
 
 
 def skor_ca(konteks: dict | None, f: dict | None = None) -> dict:
@@ -363,10 +363,11 @@ def skor_ca(konteks: dict | None, f: dict | None = None) -> dict:
     nilai, sup, lawan, gates = 0.5, [], [], []
     berat = sorted({w for t in teks for w in CA_BERAT if w in t})
     dil = sorted({w for t in teks for w in CA_DILUSI if w in t})
-    pos = sorted({w for t in teks for w in CA_POSITIF if w in t})
+    pos = sorted({kat for t in teks for kat, kata in CA_POSITIF.items() if any(w in t for w in kata)})
     if pos:
         nilai = 0.75 if len(pos) == 1 else 1.0
-        sup.append("[OBS] aksi positif: " + ", ".join(pos))
+        contoh = [t for t in teks if any(w in t for kat in pos for w in CA_POSITIF[kat])][:3]
+        sup.append("[OBS] aksi positif (" + ", ".join(pos) + "): " + " | ".join(c[:90] for c in contoh))
     if ins.get("status") == "ok" and ins.get("nilai_beli", 0) > ins.get("nilai_jual", 0) and ins.get("n", 0):
         nilai = min(1.0, nilai + 0.25)
         sup.append(f"[OBS] insider net beli (Rp{ins['nilai_beli']:,.0f} vs jual Rp{ins['nilai_jual']:,.0f})")
@@ -375,18 +376,21 @@ def skor_ca(konteks: dict | None, f: dict | None = None) -> dict:
         lawan.append("[OBS] pemegang saham pengendali menjual dalam 120 hari")
     if dil:
         nilai = min(nilai, 0.25)
-        lawan.append("[OBS] potensi dilusi: " + ", ".join(dil))
+        lawan.append("[OBS] potensi dilusi: " + ", ".join(dil) + " | " + " | ".join(t[:90] for t in teks if any(w in t for w in dil))[:250])
     if nt.get("ada"):
         nilai = min(nilai, 0.25)
         lawan.append("[OBS] notasi khusus BEI: " + "; ".join(nt.get("teks", [])[:2]))
         gates.append(dict(gate="FUNDAMENTAL_RED_FLAG", berat="WATCH", alasan="notasi khusus BEI"))
     if berat:
         nilai = 0.0
-        lawan.append("[OBS] peristiwa berat: " + ", ".join(berat))
+        lawan.append("[OBS] peristiwa berat: " + ", ".join(berat) + " | " + " | ".join(t[:90] for t in teks if any(w in t for w in berat))[:250])
         gates.append(dict(gate="FUNDAMENTAL_RED_FLAG", berat="AVOID", alasan="peristiwa berat: " + ", ".join(berat)))
     if not (pos or dil or berat or nt.get("ada") or ins.get("pengendali_jual")):
         sup.append("[OBS] tidak ada aksi korporasi/keterbukaan bermakna yang terdeteksi (netral)")
-    d = _dim("Aksi korporasi & keterbukaan", _skala(nilai * 10, 10), [dict(nama="Sumber terbaca", poin=nilai, maks=1, detail=", ".join(sumber))], sup, lawan,
+    aturan = ("mulai 0,50 (netral) · 1 kategori positif (buyback ATAU dividen) = 0,75 · 2 kategori (buyback DAN dividen) = 1,00 · insider net beli +0,25 · "
+              "pengendali jual / dilusi (HMETD, rights issue, private placement) / notasi khusus = maks 0,25 · PKPU/pailit/delisting/suspensi = 0")
+    d = _dim("Aksi korporasi & keterbukaan", _skala(nilai * 10, 10), [dict(nama="Sumber terbaca", poin=nilai, maks=1, detail=", ".join(sumber) + f" ({len(teks)} judul/aksi)"),
+                                                                       dict(nama="Aturan CA", poin=None, maks=None, detail=aturan)], sup, lawan,
              len(sumber) >= 2, "Deteksi kata kunci pada judul keterbukaan/berita; baca dokumen aslinya sebelum memutuskan.", [], frac=nilai, kode="CA")
     d["gates"] = gates
     return d
