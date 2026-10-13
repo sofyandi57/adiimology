@@ -45,6 +45,10 @@ def _fatal(f: dict | None) -> list[str]:
     return [p for p in f.get("peringatan", []) if any(k in p for k in kunci)]
 
 
+LABEL_REF = {"NYANGKUT": "harga di bawah referensi transaksi (estimasi)", "IMPAS": "harga dekat referensi transaksi (estimasi)",
+             "TIDAK NYANGKUT": "harga di atas referensi transaksi (estimasi)", "TIDAK ADA AKUMULATOR BERSIH": "tidak ada akumulator bersih"}
+
+
 def keputusan(r, rk: dict | None, f: dict | None, alr: dict | None = None,
               nilai: dict | None = None, hk_: dict | None = None, ctx: dict | None = None) -> tuple[str, list[str]]:
     """Vonis dari SKOR tiga dimensi (skor.py): bandarmologi, teknikal, fundamental (1-10) -> rata-rata. ctx = {'mode', 'konteks', 'ledger'}.
@@ -271,7 +275,7 @@ def _chart_png(r, rk: dict | None) -> bytes:
         ax.plot(x, d["close"], color="#111827", lw=1.4, label="Close")
         lines = []
         ticks = d["tgl"].astype(str).tolist()
-    lines += [(r.calc["t_real_r"], "Target realistis", "#d97706"), (r.bandar["avg"], "Avg bandar", "#2563eb")]
+    lines += [(r.calc["t_real_r"], "Target realistis", "#d97706"), (r.bandar["avg"], "Ref. transaksi (est.)", "#2563eb")]
     for y, nama, c in lines:
         ax.axhline(y, color=c, lw=0.9, ls="--")
         ax.text(len(d) - 1, y, f" {nama} {y:,.0f}", color=c, fontsize=7, va="bottom", ha="right")
@@ -377,14 +381,14 @@ def pdf_bytes(r, rk: dict | None, f: dict | None, waktu: str, ovn: dict | None =
     el.append(Paragraph(_safe("* kriteria inti. Hasil backtest Adimology: " + bd.HASIL_BACKTEST), small))
     if b200:
         el.append(_tbl([[Paragraph(_safe(
-            f"Bandar {b200['hari']} hari bursa ({b200['dari']} s/d {b200['sampai']}): {b200['status']} - {b200['nyangkut']}. "
+            f"Bandar {b200['hari']} hari bursa ({b200['dari']} s/d {b200['sampai']}): {b200['status']} - {LABEL_REF.get(b200['nyangkut'], b200['nyangkut'])}. "
             f"{b200['keterangan']}."), p)]], [W], header=False,
             cell_bg={(0, 0): {"NYANGKUT": "#FEF9C3", "TIDAK NYANGKUT": "#DCFCE7"}.get(b200["nyangkut"], "#F3F4F6")}))
         data = [["Akumulator", "Net lot", "Avg beli", "Harga vs avg"]] + [
             [_safe(x["code"]), _n(x["net_lot"]), _n(x["avg"], 1), _pct(x["floating"])] for x in b200["akumulator"]]
         el.append(_tbl(data, [W * 0.25] * 4))
     el.append(Paragraph("Skenario target Adimology (belum terbukti backtest)", h2))
-    ad_rows = [["Verdict", "Bandar", "Avg bandar", "Net (lot)", "Target realistis", "Target max", "SL window"],
+    ad_rows = [["Verdict", "Broker", "Ref. transaksi (est.)", "Net (lot)", "Target realistis", "Target max", "SL window"],
                [Paragraph(_safe(r.verdict), ParagraphStyle("c", parent=p, fontSize=8, leading=9)), _safe(r.bandar["code"]), _n(r.bandar["avg"], 1), _n(r.bandar["net_lot"]),
                 f"{_n(r.calc['t_real_r'])} ({_pct(r.calc['upside_real'])})", f"{_n(r.calc['t_max_r'])} ({_pct(r.calc['upside_max'])})",
                 _n(r.plan["sl"])]]

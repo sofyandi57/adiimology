@@ -121,7 +121,7 @@ def test_app_runs_and_computes(monkeypatch, tmp_path):
     # sesi baru (login ulang) masih melihat histori dari DB -> persisten
     at2 = open_app(monkeypatch)
     hdf = [d.value for d in at2.dataframe if "Nama Emiten" in d.value.columns][0]
-    assert [c for c in hdf.columns if c not in ("Vonis", "Mode", "Alasan utama", "Skor Bandar", "Skor Teknikal", "Skor Fundamental", "Rata-rata")] == ["Nama Emiten", "Tanggal & Waktu Pengecekan", "Target Adimologi", "Stop Loss", "Current Price"]
+    assert [c for c in hdf.columns if c not in ("Vonis", "Mode", "Alasan utama", "TA", "FA", "BA", "CA", "Total", "Coverage")] == ["Nama Emiten", "Tanggal & Waktu Pengecekan", "Target Adimologi", "Stop Loss", "Current Price"]
     assert hdf.iloc[0]["Vonis"] in ("BELI", "TUNGGU", "HINDARI / JUAL") and hdf.iloc[0]["Alasan utama"] not in ("", "-")
     assert len(hdf) == 1 and hdf.iloc[0]["Nama Emiten"] == "MCAS" and hdf.iloc[0]["Target Adimologi"] == 292
     assert hdf.iloc[0]["Tanggal & Waktu Pengecekan"].endswith("WIB")
@@ -158,7 +158,7 @@ def test_b200_success_renders(monkeypatch):
     [b for b in at.button if b.label == "Hitung lengkap"][0].click().run()
     assert not at.exception, [e.value for e in at.exception]
     assert at.session_state["b200"][0] == "ok"
-    assert any("harga di bawah estimasi modal" in w.value for w in at.warning)
+    assert any("harga di bawah referensi transaksi" in w.value for w in at.warning)
     assert any({"code", "floating"} <= set(d.value.columns) for d in at.dataframe)
     assert at.session_state["export"]["pdf"][:4] == b"%PDF"
 
@@ -246,7 +246,9 @@ def test_histori_snapshot_recall(monkeypatch, tmp_path):
     e = sa.create_engine(f"sqlite:///{tmp_path / 'h.db'}")
     with e.connect() as c:
         n, = c.execute(sa.text("select count(*) from histori_snapshot")).first()
+        sk_row = c.execute(sa.text("select ticker, ta_score, total_score, score_coverage, signal, scoring_version from skor_histori")).first()
     assert n == 1
+    assert sk_row[0] == "MCAS" and sk_row[3] is not None and sk_row[4] in ("BELI", "TUNGGU", "HINDARI / JUAL") and sk_row[5].startswith("skor-")
 
 
 def test_rapor_keputusan_tercatat_dan_evaluasi(monkeypatch, tmp_path):

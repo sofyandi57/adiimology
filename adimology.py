@@ -427,14 +427,14 @@ def analyze(client: InvezgoClient, p: Params) -> Result:
     elif upside < p.min_upside:
         verdict = "TIDAK ADA SINYAL"; alasan.append(f"upside {upside:.1%} < minimal {p.min_upside:.0%}")
     elif harga > bandar["avg"] * (1 + p.maks_kejar):
-        verdict = "TIDAK ADA SINYAL"; alasan.append(f"harga {harga / bandar['avg'] - 1:+.1%} di atas avg bandar (mengejar)")
+        verdict = "TIDAK ADA SINYAL"; alasan.append(f"harga {harga / bandar['avg'] - 1:+.1%} di atas referensi transaksi broker (mengejar)")
     else:
         verdict = "SETUP TERPENUHI"; setup_ok = True
-        alasan.append("akumulasi bersih, tidak distribusi, harga dekat modal bandar")
+        alasan.append("akumulasi bersih, tidak distribusi, harga dekat referensi harga transaksi")
     if bandar["porsi"] < 3:
         alasan.append(f"catatan: porsi net {bandar['porsi']:.1f}% dari volume, bandar tidak dominan")
     if floating < 0:
-        alasan.append(f"catatan: bandar rugi mengambang {floating:.1%}")
+        alasan.append(f"catatan: harga {floating:.1%} dari referensi harga transaksi broker (bukan harga pokok)")
     if lpp_sumber == "orderbook" and ob and ob["n_levels"] <= 4:
         alasan.append("catatan: orderbook hanya 1-2 level, lot per papan tidak representatif")
 

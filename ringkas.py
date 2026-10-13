@@ -20,6 +20,7 @@ import hengky as hk
 import laporan as lp
 import konteks as ktx
 import skor as sk
+import bandar_flow as bf
 import ledger_calc as lgc
 
 HORIZON = (5, 10, 20)
@@ -253,7 +254,7 @@ def _data_lines(r, rk, f, ovn, alr, b200, hk_, nilai, vol, ritel, stat) -> list[
 
     if b200:
         add(f"## BANDAR {b200['hari']}H ({b200['dari']}..{b200['sampai']}) -- top-5 non-ritel PER PERIODE (definisi berbeda dari kelompok tetap di atas dan dari konsentrasi window): JANGAN dibandingkan langsung")
-        add(f"[INF] arah={b200['status'].lower()} {_lbl_nyangkut(b200['nyangkut'])} | [OBS] modal_top3={_f(b200['modal_top3'])} net_top3={_i(b200['net_top3_lot'])}lot "
+        add(f"[INF] arah={b200['status'].lower()} {_lbl_nyangkut(b200['nyangkut'])} | [OBS] ref_transaksi_top3={_f(b200['modal_top3'])} net_top3={_i(b200['net_top3_lot'])}lot "
             f"harga_vs_modal={_p(b200['floating_top3'])} acc5/dist5={_m(b200['net_acc5_value'])}/{_m(b200['net_dist5_value'])} konsentrasi={b200['konsentrasi']['status']}")
         add("akumulator(kode:net_lot@avg|harga_vs_avg)=" + ",".join(f"{x['code']}:{_i(x['net_lot'])}@{_i(x['avg'])}|{_p(x['floating'], 0)}" for x in b200["akumulator"]))
         add("distributor=" + ",".join(f"{x['code']}:{_i(x['net_lot'])}@{_i(x['avg'])}" for x in b200["distributor"]))
@@ -352,8 +353,8 @@ def _lbl_bandar(k: str) -> str:
 
 
 def _lbl_nyangkut(k: str) -> str:
-    return {"NYANGKUT": "harga DI BAWAH estimasi modal transaksi bersih broker (belum tentu posisi tertekan; waktu beli tidak diketahui)",
-            "IMPAS": "harga dekat estimasi modal (perkiraan)", "TIDAK NYANGKUT": "harga di atas estimasi modal (perkiraan)"}.get(k, k)
+    return {"NYANGKUT": "harga DI BAWAH referensi transaksi (estimated_transaction_reference) broker; bukan harga pokok, posisi yang masih dipegang tidak diketahui",
+            "IMPAS": "harga dekat referensi transaksi (estimasi)", "TIDAK NYANGKUT": "harga di atas referensi transaksi (estimasi)"}.get(k, k)
 
 
 def _bandar_lines(din: dict | None) -> list[str]:
@@ -575,7 +576,7 @@ def _audit_lines(r, rk, f, nilai, hk_, kep, alasan, ritel, b200) -> list[str]:
              "RR=(target-entry)/(entry-SL); impas=harga*(1+fee_b)/(1-fee_j); LTM=FY(t-1)-YTD(t-1)+YTD(t) (cadangan: 4 kuartal / YTD disetahunkan); Q4=FY-YTD Q3; "
              "laba_normalisasi: kuartal |selisih median|>3xMAD diganti median kuartal lain; base_rate: return/MFE/MAE harian historis, n_eff=n/H; " + au.RUMUS_POSISI)
     L.append(f"asumsi: modal=Rp{p.modal:,.0f} risiko/trade={p.risiko_pct:.1%} fee_beli={p.fee_beli:.2%} fee_jual={p.fee_jual:.2%} (pajak jual dianggap termasuk); lot=100 lembar; window_broker={p.window_hari}h; "
-             f"ritel(minat)=XL,XC,PD,CC,YP (default); ambang heuristik belum divalidasi: distribusi {p.distribusi_pct:.0%}, nyangkut +-5%, SID +-2% (3 bln), volume tinggi 1.5x, likuid 5M/hari, uptrend=harga>MA50 & MA50 naik")
+             f"ritel(minat)=XL,XC,PD,CC,YP (default); ambang heuristik belum divalidasi: distribusi {p.distribusi_pct:.0%}, referensi transaksi +-5%, SID +-2% (3 bln), volume tinggi 1.5x, likuid 5M/hari, uptrend=harga>MA50 & MA50 naik")
     sinyal = {"adimology": 1 if r.verdict.startswith("SETUP") else -1,
               "bandarmologi": {"kuat": 1, "waspada": -1, "lain": 0}[bd.gate(nilai)]}
     if rk:
@@ -619,6 +620,7 @@ def _baris(r, rk, f, waktu: str, ovn=None, alr=None, b200=None, hk_=None, nilai=
     L += _data_lines(r, rk, f, ovn, alr, b200, hk_, nilai, vol, ritel, stat)
     L += _audit_lines(r, rk, f, nilai, hk_, kep, alasan, ritel, b200)
     L += sk.baris_laporan(sk.hitung(r, rk, f, alr, nilai, hk_, ctx or {}))
+    L += bf.baris((ctx or {}).get('flow'))
     L += ktx.baris_laporan((ctx or {}).get('konteks'))
     L += lgc.baris_ai(ledger, r.params.kode)
     L.append("## BATASAN DATA & ENDPOINT")

@@ -18,7 +18,7 @@ import pandas as pd
 import adimology as ad
 
 JENDELA = (1, 3, 7, 20, 60)
-BOBOT = {"Konsistensi aliran": 0.20, "Konsentrasi & dominasi": 0.15, "Estimasi modal transaksi": 0.15,
+BOBOT = {"Konsistensi aliran": 0.20, "Konsentrasi & dominasi": 0.15, "Referensi transaksi (estimasi)": 0.15,
          "Respons harga terhadap flow": 0.20, "Konfirmasi volume & struktur harga": 0.15, "Risiko distribusi & pembatalan": 0.15}
 
 K_TERKONFIRMASI = "AKUMULASI TERKONFIRMASI (perilaku harga)"
@@ -198,13 +198,13 @@ def dimensi(m: pd.DataFrame, kons: dict, resp: dict, sup: dict, bo: dict, modal:
         d = modal["harga_vs_pusat"]
         s3 = 100 if -0.03 <= d <= 0.05 else 60 if -0.08 <= d <= 0.10 else 30
         ya, tdk = [], []
-        (ya if s3 >= 60 else tdk).append(f"harga {d:+.1%} dari estimasi modal {modal['pusat']:,.0f} (rentang {modal['rendah']:,.0f}-{modal['tinggi']:,.0f}, {modal['harga_vs_rentang']})")
+        (ya if s3 >= 60 else tdk).append(f"harga {d:+.1%} dari referensi transaksi (estimasi) {modal['pusat']:,.0f} (rentang {modal['rendah']:,.0f}-{modal['tinggi']:,.0f}, {modal['harga_vs_rentang']})")
         if modal["lebar"] > 0.10:
             tdk.append(f"rentang estimasi lebar ({modal['lebar']:.0%}): ketidakpastian tinggi")
             s3 -= 15
     else:
-        s3, ya, tdk = 0, [], [f"estimasi modal tidak tersedia ({modal.get('alasan')})"]
-    out.append(_d("Estimasi modal transaksi", s3, ya, tdk, "posisi harga terhadap rata-rata beli bersih kelompok (proksi, bukan harga pokok)"))
+        s3, ya, tdk = 0, [], [f"referensi transaksi (estimasi) tidak tersedia ({modal.get('alasan')})"]
+    out.append(_d("Referensi transaksi (estimasi)", s3, ya, tdk, "posisi harga terhadap rata-rata beli bersih kelompok (proksi, bukan harga pokok)"))
 
     r20 = m[m["jendela"] == 20]
     ya, tdk = [], []
@@ -323,16 +323,16 @@ def posisi_tertekan(d: dict) -> tuple[str, str]:
     """'Indikasi posisi tertekan' hanya bila harga di bawah SELURUH rentang estimasi modal, aliran konsisten, dan respons harga negatif."""
     mo = d.get("modal") or {}
     if not mo.get("ada"):
-        return "TIDAK DAPAT DISIMPULKAN", "estimasi modal tidak tersedia"
+        return "TIDAK DAPAT DISIMPULKAN", "referensi transaksi (estimasi) tidak tersedia"
     m = d["tabel"]
     r20 = float(m.loc[m["jendela"] == 20, "ret_harga"].iloc[0]) if (m["jendela"] == 20).any() else np.nan
     kons = d["konsistensi"]["frac_pos"]
     if mo["harga_vs_rentang"] == "di bawah rentang" and mo["harga_vs_pusat"] <= -0.05 and kons >= 0.6 and pd.notna(r20) and r20 < 0:
-        return "INDIKASI POSISI TERTEKAN", (f"harga {mo['harga_vs_pusat']:+.1%} di bawah estimasi modal ({mo['rendah']:,.0f}-{mo['tinggi']:,.0f}), "
+        return "INDIKASI POSISI TERTEKAN", (f"harga {mo['harga_vs_pusat']:+.1%} di bawah referensi transaksi (estimasi) ({mo['rendah']:,.0f}-{mo['tinggi']:,.0f}), "
                                            f"{kons:.0%} hari net beli, harga turun {r20:+.1%} sejak 20h; tetap estimasi, bukan posisi sebenarnya")
     if mo["harga_vs_pusat"] <= -0.05:
-        return "TIDAK DAPAT DISIMPULKAN", "harga di bawah estimasi modal tetapi konsistensi waktu/respons harga tidak mendukung"
-    return "TIDAK TERINDIKASI", f"harga {mo['harga_vs_pusat']:+.1%} dari estimasi modal ({mo['harga_vs_rentang']})"
+        return "TIDAK DAPAT DISIMPULKAN", "harga di bawah referensi transaksi (estimasi) tetapi konsistensi waktu/respons harga tidak mendukung"
+    return "TIDAK TERINDIKASI", f"harga {mo['harga_vs_pusat']:+.1%} dari referensi transaksi (estimasi) ({mo['harga_vs_rentang']})"
 
 
 def tujuh_pertanyaan(d: dict, tindakan: str) -> list[tuple[str, str]]:

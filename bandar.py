@@ -118,13 +118,13 @@ def penilaian(r, a: dict | None = None, rk: dict | None = None, dinamis: dict | 
     else:
         ks.append(_k("Tidak ada distribusi bandar", YA, 1, f"net hari terakhir {r.net_terakhir:+,.0f} lot", inti=True))
 
-    # 4. harga belum dikejar (dekat modal bandar)
+    # 4. harga belum dikejar (dekat referensi harga transaksi broker; BUKAN harga pokok)
     fl = r.floating
     poin = 1 if fl <= 0.05 else -1 if fl > 0.15 else 0
-    ks.append(_k("Harga dekat modal bandar", YA if poin > 0 else NETRAL if poin == 0 else TIDAK, poin,
-                 f"harga {fl:+.1%} dari avg bandar {r.bandar['avg']:,.1f}"))
+    ks.append(_k("Harga dekat referensi transaksi", YA if poin > 0 else NETRAL if poin == 0 else TIDAK, poin,
+                 f"harga {fl:+.1%} dari referensi transaksi (estimasi) {r.bandar['avg']:,.1f}"))
     if fl > 0.15:
-        jebakan.append(f"Harga sudah {fl:+.0%} di atas modal bandar: membeli sekarang = memberi exit untuk bandar.")
+        jebakan.append(f"Harga sudah {fl:+.0%} di atas referensi harga transaksi broker akumulator: membeli sekarang berarti mengejar harga.")
 
     # 5. asing searah
     if a and a.get("asing"):
@@ -266,13 +266,12 @@ def bandar_panjang(client, kode: str, tgl_list: list, harga: float, bs_window: p
     if net3 <= 0 or np.isnan(fl3):
         nyangkut, ket = "TIDAK ADA AKUMULATOR BERSIH", "tidak ada broker dengan net beli selama periode"
     elif fl3 <= -nyangkut_pct:
-        nyangkut, ket = "NYANGKUT", (f"harga {fl3:+.1%} di bawah modal rata-rata top-3 akumulator ({modal3:,.0f}); "
-                                     f"mereka masih memegang ±{net3:,.0f} lot dan butuh harga ≥ {modal3:,.0f} untuk impas")
+        nyangkut, ket = "NYANGKUT", (f"harga {fl3:+.1%} di bawah referensi transaksi (estimasi) top-3 akumulator ({modal3:,.0f}); "
+                                     f"net beli mereka {net3:,.0f} lot selama periode (bukan posisi yang pasti masih dipegang)")
     elif fl3 < nyangkut_pct:
-        nyangkut, ket = "IMPAS", f"harga {fl3:+.1%} dari modal rata-rata ({modal3:,.0f}): dekat titik impas"
+        nyangkut, ket = "IMPAS", f"harga {fl3:+.1%} dari referensi transaksi (estimasi) {modal3:,.0f}: dekat referensi"
     else:
-        nyangkut, ket = "TIDAK NYANGKUT", (f"harga {fl3:+.1%} di atas modal rata-rata ({modal3:,.0f}): akumulator untung, "
-                                           "ada risiko ambil untung")
+        nyangkut, ket = "TIDAK NYANGKUT", f"harga {fl3:+.1%} di atas referensi transaksi (estimasi) {modal3:,.0f}"
     return dict(dari=tgl[0], sampai=tgl[-1], hari=len(tgl), n_broker=int(len(bs)), status=status, net_acc5_value=net_acc5,
                 net_dist5_value=net_dist5, modal_top3=modal3, net_top3_lot=net3, floating_top3=fl3, nyangkut=nyangkut,
                 keterangan=ket, akumulator=acc, distributor=dist, konsentrasi=ad.konsentrasi(bs, excl),

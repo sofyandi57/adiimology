@@ -141,7 +141,7 @@ def make_chart(r: ad.Result) -> go.Figure:
     x = df["tgl"].astype(str)
     fig = go.Figure(go.Candlestick(x=x, open=df["open"], high=df["high"], low=df["low"], close=df["close"],
                                    name=r.params.kode, increasing_line_color="#16a34a", decreasing_line_color="#dc2626"))
-    lines = [(r.bandar["avg"], f"Avg bandar {r.bandar['code']}", "#2563eb", "dash"),
+    lines = [(r.bandar["avg"], f"Ref. transaksi {r.bandar['code']} (est.)", "#2563eb", "dash"),
              (r.calc["t_real_r"], "Target realistis", "#d97706", "dot"),
              (r.calc["t_max_r"], "Target max", "#9333ea", "dot"),
              (r.plan["sl"], "SL (low window)", "#6b7280", "dashdot")]
@@ -199,7 +199,7 @@ def _sa_url(url: str) -> str:
 
 
 @st.cache_resource(show_spinner=False)
-def histori_engine(url: str, versi: int = 5) -> sa.Engine:     # naikkan versi bila ada tabel baru (cache resource bertahan antar-deploy)
+def histori_engine(url: str, versi: int = 6) -> sa.Engine:     # naikkan versi bila ada tabel baru (cache resource bertahan antar-deploy)
     eng = sa.create_engine(_sa_url(url), pool_pre_ping=True)
     HIST_META.create_all(eng)
     try:   # migrasi ringan: kolom alasan pada tabel keputusan yang sudah ada di Neon
@@ -236,6 +236,45 @@ HIST_KEP = sa.Table(
     sa.Column("harga", sa.Float), sa.Column("entry_lo", sa.Float), sa.Column("entry_hi", sa.Float),
     sa.Column("zona_valid", sa.Boolean), sa.Column("sl", sa.Float), sa.Column("tp1", sa.Float), sa.Column("tp2", sa.Float),
     sa.Column("alasan", sa.Text), sa.Column("skor_bandar", sa.Float), sa.Column("skor_teknikal", sa.Float), sa.Column("skor_fund", sa.Float), sa.Column("skor_rata", sa.Float))
+
+
+HIST_SKOR = sa.Table(
+    "skor_histori", HIST_META,                     # tabel historis skor: APPEND-ONLY (snapshot tidak pernah ditimpa / dihapus)
+    sa.Column("id", sa.Integer, primary_key=True, autoincrement=True),
+    sa.Column("date", sa.Date, nullable=False), sa.Column("timestamp", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("ticker", sa.String(10), nullable=False, index=True), sa.Column("price", sa.Float),
+    sa.Column("ta_score", sa.Float), sa.Column("fa_score", sa.Float), sa.Column("ba_score", sa.Float), sa.Column("ca_score", sa.Float),
+    sa.Column("total_score", sa.Float), sa.Column("score_coverage", sa.Float), sa.Column("signal", sa.String(20)),
+    sa.Column("scoring_version", sa.String(60)), sa.Column("data_quality", sa.String(200)), sa.Column("notes", sa.Text))
+
+
+def simpan_skor(r, waktu: dt.datetime, sc: dict, mode: str) -> None:
+    import json as js_
+    d = {x["kode"]: x["nilai"] for x in sc["dims"]}
+    notes = js_.dumps(dict(mode=mode, ringkas=sc["ringkas"], ket=sc["ket"], gates=sc["gates"], invalidasi=sc["invalidasi"][:8], flags=sc["flags"]), ensure_ascii=False, default=str)
+    row = dict(date=r.tgl_akhir, timestamp=waktu, ticker=r.params.kode, price=_num(r.harga), ta_score=d.get("TA"), fa_score=d.get("FA"), ba_score=d.get("BA"), ca_score=d.get("CA"),
+               total_score=sc["total"], score_coverage=sc["coverage"], signal=sc["vonis"], scoring_version=sc["versi"][:60], data_quality=sc["data_quality"][:200], notes=notes)
+    url = histori_url()
+    if url:
+        try:
+            with histori_engine(url).begin() as c:
+                c.execute(HIST_SKOR.insert().values(**row))
+            return
+        except Exception as e:
+            st.session_state["_db_err"] = type(e).__name__
+    st.session_state.setdefault("skor_log", []).append(row)
+
+
+def daftar_skor(limit: int = 2000) -> pd.DataFrame:
+    rows = list(st.session_state.get("skor_log", []))
+    url = histori_url()
+    if url:
+        try:
+            with histori_engine(url).connect() as c:
+                rows += [dict(m) for m in c.execute(sa.select(HIST_SKOR).order_by(HIST_SKOR.c.id.desc()).limit(limit)).mappings()]
+        except Exception as e:
+            st.session_state["_db_err"] = type(e).__name__
+    return pd.DataFrame(rows)
 
 
 def simpan_keputusan(kode: str, waktu: dt.datetime, mode: str, kep: str, r, rk: dict | None, alasan: str = "", skor: dict | None = None) -> None:
@@ -362,9 +401,50 @@ def hapus_histori() -> None:
 def ringkas(r: ad.Result) -> dict:
     return {"Kode": r.params.kode, "Penilaian (tanpa aliran)": bd.penilaian(r)["kategori"],
             "Skenario Adimology": r.verdict, "Bandar": r.bandar["code"],
-            "Net lot": r.bandar["net_lot"], "Avg bandar": r.bandar["avg"], "Harga": r.harga,
+            "Net lot": r.bandar["net_lot"], "Ref. transaksi (est.)": r.bandar["avg"], "Harga": r.harga,
             "Target realistis": r.calc["t_real_r"], "Target max": r.calc["t_max_r"],
             "Upside realistis %": r.calc["upside_real"] * 100, "Alasan": "; ".join(r.alasan[:2])}
+
+
+def tampil_flow(fl: dict | None) -> None:
+    """Aliran transaksi broker dalam 3 lapisan: observed flow, price confirmation, interpretation (bandar_flow)."""
+    import bandar_flow as bf_
+    st.markdown("#### 🔀 Aliran transaksi broker (3 lapisan)")
+    if not fl:
+        st.info("Belum dihitung. Klik Hitung lengkap, atau isi Ledger Broker (≥ 20 sesi).")
+        return
+    warna = {bf_.ACC_K: st.success, bf_.ACC_C: st.info, bf_.NETRAL: st.info, bf_.DIS_C: st.warning, bf_.DIS_K: st.error}.get(fl["label"], st.info)
+    warna(f"**{fl['label']}** · {fl['teks']} · evidence **{fl['evidence']}** (tingkat bukti, bukan probabilitas)" +
+          (f"  \n{fl.get('alasan_data')}" if fl.get("alasan_data") else ""))
+    if fl["label"] == bf_.INSUF:
+        return
+    k = fl["kualitas"]
+    st.caption(f"Sumber: {k['sumber']} · {k['sesi']} sesi ({k['dari']} s/d {k['sampai']}) · crossing {'-' if k.get('crossing_pct') is None else format(k['crossing_pct'], '.0%')} · "
+               f"nilai transaksi median 20D Rp{k['nilai_transaksi_median_20d'] / 1e9:,.1f} M ({'likuid' if k['likuid'] else 'TIDAK likuid'}) · "
+               f"kelompok ritel: {fl['ritel_versi']} (proksi; non-ritel = semua broker lain)")
+    st.markdown("**Lapisan 1 · Observed flow** (lot)")
+    st.dataframe(fl["observed"].rename(columns={"jendela": "Jendela", "dari": "Dari", "sampai": "Sampai", "net_non_ritel": "Net non-ritel", "net_ritel_proksi": "Net ritel proksi",
+                                               "pct_volume": "% volume", "volume_lot": "Volume", "top3_beli": "Top-3 beli", "top3_jual": "Top-3 jual", "rasio_konsentrasi": "Rasio top3 beli/jual"}),
+                 hide_index=True, width="stretch", column_config={"% volume": st.column_config.NumberColumn(format="percent"),
+                                                                  **{c: st.column_config.NumberColumn(format="%,.0f") for c in ("Net non-ritel", "Net ritel proksi", "Volume")},
+                                                                  "Rasio top3 beli/jual": st.column_config.NumberColumn(format="%.2f")})
+    p_ = fl["persistensi"]
+    st.caption(f"Persistensi {p_['sesi']} sesi: {p_['frac_beli']:.0%} sesi non-ritel net beli · {p_['frac_jual']:.0%} net jual · streak beli terpanjang {p_['streak_beli_terpanjang']} · "
+               f"streak terakhir {p_['streak_terakhir']:+d} · pergantian arah {p_['pergantian_arah']}")
+    h = fl["harga"]
+    st.markdown("**Lapisan 2 · Price confirmation**")
+    st.markdown(f"- Return: " + ", ".join(f"{k_} {v:+.1%}" for k_, v in h["ret"].items()) +
+                f"\n- Close {h['close']:,.0f} vs MA20 {h['ma20']:,.0f}; volume 5/20 hari {h['rvol_5_20']:.2f}x; drawdown dari high 60 hari {h['drawdown_60d']:+.1%}"
+                f"\n- Breakout: {'tidak ada' if not h['breakout'] else h['breakout']['tgl'] + (' **GAGAL**' if h['breakout']['gagal'] else ' bertahan')} · hari distribusi 20D: {len(h['hari_distribusi'])} · "
+                f"absorpsi: {'terkonfirmasi' if h['absorpsi']['terkonfirmasi'] else ('kandidat ' + str(len(h['absorpsi']['hari'])) + ' hari (belum merebut level)' if h['absorpsi']['hari'] else 'tidak ada')}"
+                f"\n- **Respons harga terhadap flow:** {h['respons']}")
+    st.markdown("**Lapisan 3 · Interpretation**")
+    c1_, c2_ = st.columns(2)
+    c1_.markdown("**Mendukung**\n" + ("\n".join(f"- {x}" for x in fl["mendukung"]) or "- -"))
+    c2_.markdown("**Berlawanan**\n" + ("\n".join(f"- {x}" for x in fl["melawan"]) or "- -"))
+    if fl["invalidasi"]:
+        st.markdown("**Batal bila:** " + "; ".join(fl["invalidasi"]))
+    st.caption("Label operasional dari aturan sistem, bukan identitas atau niat pihak tertentu. Satu kode broker = banyak nasabah. Ambang = parameter terdokumentasi (bandar_flow.CfgFlow).")
 
 
 def tampil_penilaian(r: ad.Result, nilai: dict) -> None:
@@ -420,10 +500,10 @@ def tampil_dinamika(d: dict) -> None:
     mo = d["modal"]
     if mo.get("ada"):
         pt = dn.posisi_tertekan(d)
-        st.markdown(f"**Estimasi modal transaksi bersih kelompok** (proksi dari rata-rata harga beli, BUKAN harga pokok): {mo['rendah']:,.0f} – {mo['tinggi']:,.0f} "
+        st.markdown(f"**Referensi transaksi bersih kelompok (estimated_transaction_reference)** (proksi dari rata-rata harga beli, BUKAN harga pokok): {mo['rendah']:,.0f} – {mo['tinggi']:,.0f} "
                     f"(pusat {mo['pusat']:,.0f}); harga {mo['harga_vs_pusat']:+.1%} dari pusat ({mo['harga_vs_rentang']}). **{pt[0]}**: {pt[1]}.")
     else:
-        st.markdown(f"**Estimasi modal:** tidak tersedia ({mo.get('alasan')}).")
+        st.markdown(f"**Referensi transaksi (estimasi):** tidak tersedia ({mo.get('alasan')}).")
     s_, b_ = d["supply"], d["breakout"]
     st.caption(f"Penyerapan supply: {s_['n_absorpsi']} dari {s_['n_jual_besar']} hari penjualan besar harga bertahan; {s_['n_volume_besar_harga_diam']} hari volume besar harga diam "
                f"tanpa pembeli kelompok; {s_['n_hari_distribusi']} hari distribusi (20h); breakout {b_['n_gagal']} gagal dari {b_['n']} (60h). "
@@ -533,8 +613,8 @@ def tampil_hengky(r, api_key) -> None:
             st.info(f"{p['waktu']}: IEP belum tersedia (di luar sesi pra-pembukaan). Terakhir {p['last']:,.0f}, bid {p['bid']:,.0f} / offer {p['offer']:,.0f}.")
 
 
-LABEL_MODAL = {"NYANGKUT": "harga di bawah estimasi modal (belum tentu posisi tertekan)", "IMPAS": "harga dekat estimasi modal",
-               "TIDAK NYANGKUT": "harga di atas estimasi modal", "TIDAK ADA AKUMULATOR BERSIH": "tidak ada akumulator bersih"}
+LABEL_MODAL = {"NYANGKUT": "harga di bawah referensi transaksi (estimasi)", "IMPAS": "harga dekat referensi transaksi (estimasi)",
+               "TIDAK NYANGKUT": "harga di atas referensi transaksi (estimasi)", "TIDAK ADA AKUMULATOR BERSIH": "tidak ada akumulator bersih"}
 
 
 def tampil_volume_dan_b200(r: ad.Result) -> None:
@@ -552,7 +632,7 @@ def tampil_volume_dan_b200(r: ad.Result) -> None:
     b = st.session_state.get("b200")
     if not b:
         return
-    st.markdown("#### 🏦 Broker jangka panjang: arah net dan posisi harga terhadap estimasi modal transaksi bersih")
+    st.markdown("#### 🏦 Broker jangka panjang: arah net dan posisi harga terhadap referensi transaksi bersih (estimasi)")
     if b[0] == "err":
         st.warning(f"Info bandar jangka panjang gagal: {b[1]}")
         return
@@ -572,7 +652,7 @@ def tampil_volume_dan_b200(r: ad.Result) -> None:
     a2.markdown("**Top distributor** (avg = harga jual rata-rata)")
     a2.dataframe(pd.DataFrame(p["distributor"]), hide_index=True, column_config=cfg, width="stretch")
     st.caption("Modal = rata-rata harga beli tertimbang volume selama periode; tidak tahu kapan barang dibeli dan tidak "
-               "melihat penjualan di pasar nego, jadi 'nyangkut' adalah perkiraan kasar, bukan posisi sebenarnya.")
+               "melihat penjualan di pasar nego, jadi referensi transaksi hanyalah perkiraan kasar, bukan harga pokok atau posisi sebenarnya.")
 
 
 MA_WARNA = {5: "#0ea5e9", 20: "#f59e0b", 50: "#10b981", 100: "#8b5cf6", 200: "#ef4444"}
@@ -664,91 +744,31 @@ def ambil_aliran(client: ad.InvezgoClient, r: ad.Result) -> dict:
 
 
 PETUNJUK = """
-**Alur singkat:** isi kode saham (tidak ada kode bawaan) → **Hitung cepat** (≈10 panggilan API pertama kali untuk saham baru, 2 di antaranya dipakai bersama semua saham; keputusan sementara) atau **Hitung lengkap** (semua modul, ≈35–40 panggilan pertama kali; jauh lebih sedikit bila diulang atau bila cache/ledger sudah terisi). Tab **Keputusan** menampilkan satu aksi (BELI/TUNGGU/HINDARI-JUAL), angka entry/SL/target, syarat berubah, dan sinyal yang tidak searah. Tombol *Lengkapi analisis* menambah modul tanpa mengulang yang sudah ada. Setiap respons API disimpan di database (cache 7 hari untuk fundamental, permanen untuk data harian yang sudah final) dan kuota bulanan (30.000) ditampilkan di sidebar. Tab **Histori** menyimpan setiap hasil dan laporan lengkapnya (MD/TXT) untuk dipanggil ulang tanpa API, serta *Rapor keputusan*: hasil nyata (TP1 vs SL) dari keputusan masa lalu. Konteks pasar & risiko (IHSG, notasi khusus, keterbukaan, insider, KSEI, peringkat) tampil di tab Keputusan; notasi khusus menahan BELI.
+**Panduan lengkap untuk pemula ada di PDF (tombol di atas).** Ringkasnya:
 
-**Ledger Broker** (tab sendiri): catatan broker harian per saham yang disimpan di database. Klik *Perbarui / backfill* (bertahap, terbatas 'Maks panggilan API'); status ACCUMULATION butuh net beli persisten + sinyal pendukung, bukan sekadar net positif. Biaya rata-rata & posisi tersisa = NET_FLOW_PROXY (bukan posisi aktual); broker bukan identitas 'bandar'. Zona distribusi = area penjualan teramati, bukan target broker.
+**Alur:** isi kode saham (tidak ada kode bawaan) → **Hitung cepat** (≈10 panggilan API untuk saham baru; vonis sementara, tidak bisa BELI) atau
+**Hitung lengkap** (semua modul, ≈35–40 panggilan pertama kali; jauh lebih sedikit bila diulang). Setiap hasil tersimpan di tab **Alat & Histori**.
 
-**Bandarmologi = kerangka bukti** (Ringkasan): bukan skor tunggal. Kelompok broker tetap (top-3 akumulator non-ritel) diukur sepadan di
-jendela 1/3/7/20/60/200 hari; enam dimensi (konsistensi aliran, konsentrasi, estimasi modal transaksi, respons harga, volume & struktur, risiko
-distribusi). Hasilnya klasifikasi: Akumulasi terkonfirmasi (perilaku harga) / terindikasi / Distribusi terindikasi / Absorpsi supply / Tidak
-konklusif, dengan bukti mendukung, menentang, keyakinan, dan kondisi pembatalan. "Nyangkut" diganti: estimasi modal transaksi bersih (rentang);
-"posisi tertekan" hanya bila harga di bawah seluruh rentang, aliran konsisten, dan harga turun. Bobot dimensi = usulan desain, belum diuji.
+**Skor TA / FA / BA / CA** (tab Keputusan): masing-masing diskrit 0 · 0,25 · 0,50 · 0,75 · 1,00 (×10 = skala 1–10); **NULL** = belum dapat dinilai,
+tidak dianggap nol. **Total** = rata-rata komponen valid; **Score_Coverage** = porsi komponen valid. Total < 0,40 = HINDARI; Total ≥ 0,70 dengan
+coverage ≥ 75%, tidak ada komponen < 0,50, harga di area beli, Hitung lengkap, Hengky lolos = BELI; selain itu TUNGGU.
+**Hard gate** (terpisah dari Total): FUNDAMENTAL_RED_FLAG, LIQUIDITY_RED_FLAG, DATA_QUALITY_WARNING, DISTRIBUTION_WARNING dapat membatasi vonis
+ke TUNGGU atau HINDARI walau Total tinggi. Ada panduan terpisah untuk calon pembeli dan pemegang, serta kondisi invalidasi.
 
-**Cara membaca (penting)**
-- Mulai dari **Penilaian bandarmologi** di Ringkasan: AKUMULASI KUAT hanya bila konsentrasi beli, konsistensi
-  bandar, tidak ada distribusi, harga dekat modal bandar, asing, nego, dan fase harga **searah**. Satu **jebakan**
-  (distribusi terselubung, bandar jual di nego, volume spike tanpa akumulasi, harga sudah dikejar, fase distribusi)
-  = WASPADA.
-- **Target Adimology adalah skenario**, bukan prediksi: di backtest tidak lebih baik dari beli acak.
-- Keputusan dari **tiga skor 1–10**: Bandarmologi, Teknikal, Fundamental, lalu rata-rata. Rata-rata < 4 = HINDARI; ≥ 7 dengan tidak ada dimensi < 5, harga di area beli, Hitung lengkap, dan Hengky lolos = BELI; selain itu TUNGGU. Dimensi 'belum andal' (data kurang, mis. Bandarmologi tanpa ledger ≥ 60 sesi) tidak dipakai untuk vonis bila ada ≥ 2 dimensi andal. Ada panduan terpisah untuk calon pembeli dan pemegang. Skor = heuristik yang belum terbukti.
+**BA = aliran transaksi 3 lapisan** (tab Bandar & Ledger → Penilaian bandar): observed flow (net non-ritel vs ritel proksi per 1/3/5/10/20/60 sesi),
+price confirmation (return, MA20, breakout gagal, hari distribusi, absorpsi), interpretation (ACCUMULATION_/DISTRIBUTION_ CANDIDATE/CONFIRMED,
+NEUTRAL, INSUFFICIENT_DATA; evidence Low/Medium/High = tingkat bukti, BUKAN probabilitas). Ritel proksi = XL, YP, XC, PD (daftar tetap & berversi).
+Rata-rata transaksi broker disebut **referensi transaksi (estimasi)**, bukan harga pokok; aplikasi tidak menyebut broker "untung" atau "nyangkut".
 
-**Validasi laporan**: TXT memuat STATUS_VALIDASI (rekonsiliasi angka posisi/RR, kesegaran data, kelengkapan fundamental); bila GAGAL,
-jangan dipakai. Kalkulator posisi memakai SATU fungsi dan stop yang sama dengan SL yang ditampilkan.
+**Ledger Broker** (tab Bandar & Ledger): catatan harian broker 200 sesi di database; backfill bertahap, lalu hanya sesi baru. Ledger ≥ 20 sesi
+menjadi sumber BA; ≥ 60 sesi untuk Bandar Score yang andal.
 
-**Unduh Markdown (untuk AI)**: isi sama dengan TXT tetapi terstruktur (heading, tabel, daftar); format yang paling nyaman dibaca AI dan
-manusia, cocok ditempel ke Claude/ChatGPT atau diunggah sebagai file.
+**Konteks & CA**: IHSG, notasi khusus, keterbukaan/berita (kata risiko: PKPU, suspensi, rights issue…), insider, KSEI, peringkat pasar, kalender aksi.
 
-**Unduh TXT (untuk AI)**: ringkasan padat (±7–12 KB) seluruh tab + statistik historis harga saham itu (peluang naik,
-sentuh target sebelum stop) untuk ditempel ke Claude/ChatGPT, mis. untuk bertanya peluang naik, cocok hold/swing/scalping,
-dan harga masuk.
+**Histori**: vonis + TA/FA/BA/CA per hitungan, laporan lengkap (MD/TXT) untuk dipanggil ulang, rapor keputusan (TP1 vs SL), dan tabel skor historis
+permanen (tidak ikut terhapus).
 
-**Minat ritel** (bawah tab Rekomendasi): jumlah investor (SID) naik/turun dan aliran broker ritel (XL, XC, PD, CC, YP;
-bisa diubah di sidebar). SID turun = minat ritel menurun; ritel net jual + SID turun = ritel dikeringkan.
-
-**Aturan Hengky** (tab baru): checklist disiplin trading dari materi Ko Hengky (Remora): uptrend, likuid, beli di
-support/breakout (bukan resistance), level pembatal (stop 1 tick, entry reason = exit reason), harga–volume (Wyckoff),
-bid–offer (lot per antrean, angka cantik, dinding), SID, tombol pra-open IEP/IEV. Keputusan BELI di PDF butuh semua
-aturan inti terpenuhi. Penerjemahan heuristik, belum divalidasi backtest.
-
-**Bandar jangka panjang** (Ringkasan): akumulasi/distribusi selama 200 hari bursa (bisa diubah di sidebar) dan
-apakah bandar **nyangkut**: harga ≥ 5% di bawah modal rata-rata top-3 akumulator = NYANGKUT; ±5% = IMPAS; di atas =
-TIDAK NYANGKUT. Perkiraan kasar dari broker summary, bukan posisi sebenarnya. Di bawahnya ada volume rata-rata harian.
-
-**Langkah cepat**
-1. Isi **Kode saham** (4 huruf, mis. BBCA) di sidebar.
-2. Atur **Window broker summary** (jumlah hari bursa yang dianalisa; default 5).
-3. Klik **Hitung**. Hasil muncul di tab-tab di kanan dan otomatis tercatat di **Histori**.
-4. Di bawah tombol Hitung muncul **Unduh Excel** (semua data per sheet) dan **Unduh PDF** (dokumen riset:
-   keputusan BELI / TUNGGU / HINDARI-JUAL, rencana trading, grafik, teknikal, bandar, fundamental).
-
-**Tab**
-- **Ringkasan**: verdict Adimology, harga, avg bandar, target realistis & max, SL, grafik, kalkulator posisi.
-- **Rekomendasi**: analisa teknikal lanjutan: area entry aman, SL, target jual (TP1/TP2) dari support/resistance,
-  MA 5/20/50/100/200, RSI 14, MACD (12, 26, 9), dan nilai bandar (net value top-5 broker).
-- **Fundamental**: highlight laba rugi, neraca, arus kas per kuartal (8 kuartal terakhir) dan valuasi
-  (PER, PBV, PS, ROE, ROA, yield). **Hijau** = tumbuh/naik, **kuning** = perlu dicek (mis. utang > aset, rugi,
-  arus kas negatif, current ratio < 1).
-- **Statistik BPJP / BSJP** (bawah tab Rekomendasi): dari candle 30 menit 6 bulan, seberapa sering saham ini naik
-  besok pagi setelah volume sore tinggi (BSJP), atau naik di sesi 1 setelah volume 30 menit pertama tinggi (BPJP);
-  target jual (sudah termasuk fee) dan jam puncak yang paling sering = jendela jual. Ambang volume dalam lembar.
-- **Konfirmasi aliran** (Ringkasan): konsentrasi top 3 pembeli vs top 15 penjual, asing, nego (bandar bisa keluar
-  lewat crossing), konsistensi bandar 1/3/7/20 hari, afiliasi broker bandar dengan pemegang saham ≥5% (KSEI).
-- **Mode bandar** di sidebar: top 1 broker atau gabungan top 3 akumulator. **Median 3 snapshot** orderbook
-  (expander Orderbook historis) meredam fake bid/offer.
-- **Broker**: periode, bandar terpilih, konsistensi 1/3/7/20 hari, pasar nego, top net buy/sell, aliran harian.
-- **Orderbook**: antrean bid/offer dan lot per papan yang dipakai rumus.
-- **Sensitivitas**: seberapa berubah target bila barang bandar / lot per papan berbeda.
-- **Multi-saham**: jalankan analisa untuk banyak kode sekaligus (maks 15).
-- **Histori**: catatan semua pengecekan (emiten, waktu WIB, target, SL, harga); bisa diunduh CSV.
-- **Rumus & catatan**: rumus Adimology dan keterbatasannya.
-
-**Parameter penting**
-- **Broker dikecualikan**: broker ritel yang bukan bandar (mis. XL, YP, XC).
-- **Broker bandar manual**: paksa broker tertentu sebagai bandar.
-- **Lot per papan manual / Orderbook historis**: dipakai saat pasar tutup (orderbook hanya 1 level).
-- **Parameter lanjutan**: margin, faktor target, ambang distribusi, modal & risiko per trade.
-
-**Membaca tab Rekomendasi**
-- **BELI DI AREA ENTRY**: harga sudah di area entry, indikator & bandar mendukung, R/R cukup.
-- **TUNGGU KE AREA ENTRY**: setup bagus tapi harga di atas entry maksimal. Pasang antrean di area beli, jangan kejar.
-- **TUNGGU**: tidak ada harga di zona support yang memberi R/R 1,5 (target terlalu dekat).
-- **Area beli** = support s/d **entry maksimal** (harga tertinggi yang masih memberi R/R ≥ 1,5 ke target).
-  **Area jual** = TP1 s/d TP2 (resistance). Stock split terdeteksi otomatis dan harga lama disesuaikan.
-- Tab **Broker** menampilkan periode broker summary (tanggal awal s/d akhir window).
-- **HINDARI**: mayoritas indikator/aliran bandar melawan, atau harga sudah tembus SL.
-- **TIDAK TERUKUR**: data harga kurang dari 60 hari bursa (mis. saham baru IPO).
-
-Data cache 5 menit (orderbook 15 detik). Semua hasil adalah edukasi, bukan ajakan transaksi.
+Semua aturan adalah heuristik yang belum terbukti secara statistik. Edukasi, bukan ajakan transaksi.
 """
 
 
@@ -790,7 +810,7 @@ with st.sidebar.form("param"):
                          help="Broker dominan ritel yang bukan bandar: XL (Stockbit), YP (Mirae), XC (Ajaib), PD (Indo Premier).")
     ritel_in = st.text_input("Broker ritel (untuk minat ritel)", value=", ".join(al.RITEL_ANALISA),
                              help="Net jual broker ini = ritel dikeringkan; net beli = akumulasi ritel. Tidak memengaruhi pemilihan bandar.")
-    b200_on = st.checkbox("Info bandar jangka panjang (akumulasi/distribusi, nyangkut atau tidak)", value=True,
+    b200_on = st.checkbox("Info broker jangka panjang (akumulasi/distribusi, harga vs referensi transaksi)", value=True,
                           help="Satu panggilan API untuk broker summary seluruh periode di bawah.")
     b200_hari = st.number_input("Jumlah hari bursa jangka panjang", 20, 250, 200, 10)
     aliran_on = st.checkbox("Aliran lanjutan (asing, nego, konsistensi 1/3/7/20 hari, afiliasi ≥5%)", value=True,
@@ -807,7 +827,7 @@ with st.sidebar.form("param"):
         margin_a = st.number_input("Margin a (%)", 0.0, 50.0, 5.0, 0.5) / 100
         faktor = st.number_input("Faktor target realistis", 0.1, 1.0, 0.5, 0.05)
         min_up = st.number_input("Min upside (%)", 0.0, 50.0, 3.0, 0.5) / 100
-        maks_kejar = st.number_input("Maks di atas avg bandar (%)", 0.0, 50.0, 5.0, 0.5) / 100
+        maks_kejar = st.number_input("Maks di atas referensi transaksi (%)", 0.0, 50.0, 5.0, 0.5) / 100
         dist = st.number_input("Ambang distribusi (% dari net window)", 1.0, 100.0, 25.0, 5.0) / 100
         modal = st.number_input("Modal (Rp)", 100_000, 10_000_000_000, 10_000_000, 1_000_000)
         risiko = st.number_input("Risiko per trade (%)", 0.1, 10.0, 1.0, 0.1) / 100
@@ -836,6 +856,9 @@ if submitted:
     st.session_state["mode"] = "lengkap" if lengkap else "cepat"
     st.session_state.pop("konteks", None)
     st.session_state.pop("ledger_sinyal", None)
+    st.session_state.pop("flow", None)
+    st.session_state.pop("inv_raw", None)
+    st.session_state.pop("_validasi_status", None)
     st.session_state.pop("tek", None)
     st.session_state.pop("fund", None)
     st.session_state.pop("export", None)
@@ -889,6 +912,7 @@ if submitted:
                     with st.spinner("Menganalisa dinamika bandar (aliran harian, respons harga, absorpsi)..."):
                         raw_d = dn.ambil(CachedClient(key), r0.params.kode, src_n["tgl"].tolist(), r0.params.broker_dikecualikan,
                                          r0.params.investor, r0.params.market)
+                        st.session_state["inv_raw"] = raw_d["inv"]
                         st.session_state["dinamis"] = ("ok", dn.analisa(raw_d["inv"], r0.harga, r0.params.broker_dikecualikan, r0.konsentrasi,
                                                                         hk.pv_baca(src_n), raw_d["summaries"], raw_d["inv200"]))
                 except Exception as e:  # dinamika bandar gagal tidak boleh mematikan kalkulator
@@ -964,12 +988,28 @@ if submitted:
             except Exception:
                 led_ = None
             st.session_state["ledger_sinyal"] = (led_ or {}).get("sinyal") if led_ else None
+            try:   # aliran transaksi 3 lapisan: ledger (semua broker) bila >= 20 sesi, selain itu inventory chart Hitung lengkap; tanpa API baru
+                import bandar_flow as bf_
+                data_f = None
+                if led_ and led_.get("ok") and led_["ledger"]["trade_date"].nunique() >= 20:
+                    data_f = bf_.dari_ledger(led_["ledger"])
+                elif st.session_state.get("inv_raw") is not None:
+                    data_f = bf_.dari_inventori(st.session_state["inv_raw"])
+                st.session_state["flow"] = bf_.analisa(data_f, rk_["ind"] if rk_ else r0.chart, bf_.CfgFlow(min_nilai_miliar=min_nilai_m))
+            except Exception as e:
+                st.session_state["flow"] = dict(label="INSUFFICIENT_DATA", alasan_data=f"analisa aliran gagal: {type(e).__name__}")
+            try:
+                st.session_state["_validasi_status"] = au.validasi(r0, rk_, f_, au.skenario_posisi(r0, rk_))["status"]
+            except Exception:
+                st.session_state["_validasi_status"] = None
+            ctx_x = dict(mode="lengkap" if lengkap else "cepat", konteks=st.session_state.get("konteks"), ledger=st.session_state.get("ledger_sinyal"),
+                         flow=st.session_state.get("flow"), validasi=st.session_state.get("_validasi_status"))
             exp["csv"] = __import__("ledger_calc").csv_ai(led_)
             with st.spinner("Menyiapkan dokumen ekspor..."):
                 for jenis, fn in (("xlsx", lp.excel_bytes), ("pdf", lp.pdf_bytes)):
                     try:
                         exp[jenis] = fn(r0, rk_, f_, waktu, o_, a_, b_, hk_s, st.session_state.get("ritel"), (st.session_state.get("nilai") or {}).get("dinamis"),
-                                        ctx=dict(mode="lengkap" if lengkap else "cepat", konteks=st.session_state.get("konteks")))
+                                        ctx=ctx_x)
                     except Exception as e:  # ekspor gagal tidak boleh mematikan kalkulator
                         exp[f"{jenis}_err"] = f"{type(e).__name__}: {e}"
                 for jenis_, fn_ in (("txt", rg.txt_bytes), ("md", rg.md_bytes)):
@@ -978,7 +1018,7 @@ if submitted:
                                           st.session_state.get("ritel"),
                                           status={k_: st.session_state.get(k_) for k_ in ("tek", "fund", "ovn", "aliran", "b200", "hengky", "dinamis")},
                                           snapshot=now.replace(tzinfo=None), ledger=led_,
-                                          ctx=dict(mode="lengkap" if lengkap else "cepat", konteks=st.session_state.get("konteks")))
+                                          ctx=ctx_x)
                     except Exception as e:
                         exp[f"{jenis_}_err"] = f"{type(e).__name__}: {e}"
             st.session_state["export"] = exp
@@ -987,7 +1027,8 @@ if submitted:
                 kep_s, alas_s, rk_k, f_k, alr_k, hk_k, nl_k = keputusan_ui.hitung(r0, "lengkap" if lengkap else "cepat")
                 import skor as sk_
                 sc_k = sk_.hitung(r0, rk_k, f_k, alr_k, nl_k, hk_k, keputusan_ui.ctx_sesi("lengkap" if lengkap else "cepat"))
-                skor_k = dict(skor_bandar=sc_k["dims"][0]["skor"], skor_teknikal=sc_k["dims"][1]["skor"], skor_fund=sc_k["dims"][2]["skor"], skor_rata=sc_k["rata"])
+                skor_k = None
+                simpan_skor(r0, w_s := (st.session_state.get("_hist_waktu") or dt.datetime.now(dt.timezone.utc)), sc_k, "lengkap" if lengkap else "cepat")
                 w_s = st.session_state.get("_hist_waktu") or dt.datetime.now(dt.timezone.utc)
                 simpan_snapshot(r0.params.kode, w_s, "lengkap" if lengkap else "cepat", kep_s, exp.get("md"), exp.get("txt"))
                 simpan_keputusan(r0.params.kode, w_s, "lengkap" if lengkap else "cepat", kep_s, r0, rk_, keputusan_ui.alasan_ringkas(kep_s, alas_s, 5), skor_k)
@@ -1100,6 +1141,7 @@ with tab_main:
         import keputusan_ui
         keputusan_ui.tampil(r, st.session_state.get("mode", "lengkap"))
         with tab_pen:
+            tampil_flow(st.session_state.get("flow"))
             tampil_penilaian(r, st.session_state.get("nilai") or bd.penilaian(r))
             tampil_volume_dan_b200(r)
         with st.expander("🧮 Skenario target Adimology (belum terbukti; bukan dasar keputusan)", expanded=False):
@@ -1107,7 +1149,7 @@ with tab_main:
                     icon="🧮")
             c = st.columns(6)
             c[0].metric("Harga", fmt(r.harga))
-            c[1].metric(f"Avg bandar ({r.bandar['code']})", fmt(r.bandar["avg"], 1), f"{r.floating:+.1%} floating", delta_color="normal")
+            c[1].metric(f"Ref. transaksi {r.bandar['code']} (est.)", fmt(r.bandar["avg"], 1), f"{r.floating:+.1%} vs harga", delta_color="normal")
             c[2].metric("Dasar (avg + a)", fmt(r.calc["dasar"], 1))
             c[3].metric("Target realistis", fmt(r.calc["t_real_r"]), f"{r.calc['upside_real']:+.1%}")
             c[4].metric("Target max", fmt(r.calc["t_max_r"]), f"{r.calc['upside_max']:+.1%}")
@@ -1451,7 +1493,7 @@ with tab_multi:
     if "multi_df" in st.session_state:
         st.dataframe(st.session_state["multi_df"], hide_index=True, width="stretch",
                      column_config={"Net lot": st.column_config.NumberColumn(format="%,.0f"),
-                                    "Avg bandar": st.column_config.NumberColumn(format="%.1f"),
+                                    "Ref. transaksi (est.)": st.column_config.NumberColumn(format="%.1f"),
                                     "Upside realistis %": st.column_config.NumberColumn(format="%+.1f")})
 
 with tab_ledger:
@@ -1469,17 +1511,22 @@ with tab_hist:
     if hdf.empty:
         st.info("Belum ada histori. Setiap hasil **Hitung** dan batch Multi-saham tercatat di sini.")
     else:
-        vonis = {}
-        for x in daftar_keputusan():
-            w_ = pd.Timestamp(x["waktu"])
-            w_ = (w_.tz_localize("UTC") if w_.tzinfo is None else w_).tz_convert(ZoneInfo("Asia/Jakarta")).strftime("%Y-%m-%d %H:%M:%S WIB")
-            vonis[(x["emiten"], w_)] = (x.get("keputusan"), x.get("mode"), x.get("alasan"), (x.get("skor_bandar"), x.get("skor_teknikal"), x.get("skor_fund"), x.get("skor_rata")))
+        def _wib(x):
+            w_ = pd.Timestamp(x)
+            return (w_.tz_localize("UTC") if w_.tzinfo is None else w_).tz_convert(ZoneInfo("Asia/Jakarta")).strftime("%Y-%m-%d %H:%M:%S WIB")
+        vonis = {(x["emiten"], _wib(x["waktu"])): (x.get("keputusan"), x.get("mode"), x.get("alasan")) for x in daftar_keputusan()}
+        sdf_ = daftar_skor()
+        skor_map = {}
+        if not sdf_.empty:
+            for x in sdf_.to_dict("records"):
+                skor_map[(x["ticker"], _wib(x["timestamp"]))] = (x.get("ta_score"), x.get("fa_score"), x.get("ba_score"), x.get("ca_score"), x.get("total_score"), x.get("score_coverage"))
         hdf = hdf.copy()
-        kk = [vonis.get((e_, w_), (None, None, None, (None, None, None, None))) for e_, w_ in zip(hdf["Nama Emiten"], hdf["Tanggal & Waktu Pengecekan"])]
+        kk = [vonis.get((e_, w_), (None, None, None)) for e_, w_ in zip(hdf["Nama Emiten"], hdf["Tanggal & Waktu Pengecekan"])]
+        sk_rows = [skor_map.get((e_, w_), (None,) * 6) for e_, w_ in zip(hdf["Nama Emiten"], hdf["Tanggal & Waktu Pengecekan"])]
         hdf.insert(1, "Vonis", [k[0] or "–" for k in kk])
         hdf.insert(2, "Mode", [k[1] or "" for k in kk])
-        for i_, nm_ in enumerate(("Skor Bandar", "Skor Teknikal", "Skor Fundamental", "Rata-rata")):
-            hdf.insert(3 + i_, nm_, [k[3][i_] if k[3][i_] is not None and pd.notna(k[3][i_]) else None for k in kk])
+        for i_, nm_ in enumerate(("TA", "FA", "BA", "CA", "Total", "Coverage")):
+            hdf.insert(3 + i_, nm_, [v[i_] if v[i_] is not None and pd.notna(v[i_]) else None for v in sk_rows])
         hdf["Alasan utama"] = [(k[2] or ("belum tercatat (hitungan sebelum fitur vonis atau batch Multi-saham)" if not k[0] else "-")) for k in kk]
         terakhir = hdf[hdf["Vonis"] != "–"].drop_duplicates("Nama Emiten")
         hindari = terakhir[terakhir["Vonis"].str.startswith("HINDARI")]
@@ -1491,7 +1538,8 @@ with tab_hist:
         st.dataframe(sty, hide_index=True, width="stretch",
                      column_config={**{c: st.column_config.NumberColumn(format="%,.0f") for c in ["Target Adimologi", "Stop Loss", "Current Price"]},
                                     "Alasan utama": st.column_config.TextColumn(width="large"),
-                                    **{c: st.column_config.NumberColumn(format="%.1f") for c in ("Skor Bandar", "Skor Teknikal", "Skor Fundamental", "Rata-rata")}})
+                                    **{c: st.column_config.NumberColumn(format="%.2f") for c in ("TA", "FA", "BA", "CA", "Total")},
+                                    "Coverage": st.column_config.NumberColumn(format="percent")})
         with st.expander("Vonis terakhir per saham (ringkas)"):
             st.dataframe(terakhir[["Nama Emiten", "Vonis", "Alasan utama", "Tanggal & Waktu Pengecekan", "Current Price"]], hide_index=True, width="stretch")
         h1, h2, h3 = st.columns([1, 1, 1])
@@ -1500,8 +1548,17 @@ with tab_hist:
         if h2.button("Hapus histori", disabled=not yakin):
             hapus_histori()
             st.rerun()
-        st.caption("Vonis = keputusan aplikasi saat hitungan itu dibuat (aturan: bandar sebagai sensor risiko, fundamental, teknikal, konteks). Target Adimologi = target realistis "
-                   "dan hanya skenario, BUKAN dasar keputusan. Menampilkan 1.000 catatan terbaru.")
+        st.caption("Vonis = keputusan aplikasi saat hitungan itu dibuat (Total dari TA/FA/BA/CA + hard gate). NULL/kosong = komponen belum dapat dinilai. "
+                   "Target Adimologi = target realistis dan hanya skenario, BUKAN dasar keputusan. Menampilkan 1.000 catatan terbaru. "
+                   "Tabel skor historis (di bawah) TIDAK ikut terhapus: snapshot skor bersifat permanen.")
+    sdf2 = daftar_skor()
+    if not sdf2.empty:
+        with st.expander(f"📜 Tabel skor historis (permanen, {len(sdf2)} baris)"):
+            tampil_s = sdf2.rename(columns={"date": "Date", "timestamp": "Timestamp", "ticker": "Ticker", "price": "Price", "ta_score": "TA_Score", "fa_score": "FA_Score",
+                                            "ba_score": "BA_Score", "ca_score": "CA_Score", "total_score": "Total_Score", "score_coverage": "Score_Coverage", "signal": "Signal",
+                                            "scoring_version": "Scoring_Version", "data_quality": "Data_Quality", "notes": "Notes"}).drop(columns=["id"], errors="ignore")
+            st.dataframe(tampil_s, hide_index=True, width="stretch")
+            st.download_button("Unduh skor historis (CSV)", tampil_s.to_csv(index=False).encode(), "skor_histori.csv", "text/csv")
     st.markdown("#### 🎯 Rapor keputusan (hasil nyata keputusan masa lalu)")
     recs = daftar_keputusan()
     if not recs:
@@ -1564,7 +1621,7 @@ with tab_rumus:
 **Perbaikan dari Excel:** jumlah papan dan langkah harga dihitung **per rentang fraksi** (1/2/5/10/25), bukan satu fraksi tetap.
 
 **Verdict** memakai aturan eksplisit (ubah di Parameter lanjutan): bandar harus net beli, tidak sedang distribusi di hari terakhir,
-harga belum melewati target realistis, upside minimal sekian persen, dan harga tidak mengejar jauh di atas avg bandar.
+harga belum melewati target realistis, upside minimal sekian persen, dan harga tidak mengejar jauh di atas referensi transaksi broker.
 
 **Keterbatasan**
 - Orderbook = foto sesaat, bisa palsu. Satu broker ≠ satu bandar. Hasil bergantung pada window.

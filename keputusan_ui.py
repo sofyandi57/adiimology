@@ -44,7 +44,8 @@ def konflik(rk, nilai, hk_, f, r) -> list[str]:
 
 
 def ctx_sesi(mode: str) -> dict:
-    return dict(mode=mode, konteks=st.session_state.get("konteks"), ledger=st.session_state.get("ledger_sinyal"))
+    return dict(mode=mode, konteks=st.session_state.get("konteks"), ledger=st.session_state.get("ledger_sinyal"), flow=st.session_state.get("flow"),
+                validasi=st.session_state.get("_validasi_status"))
 
 
 def hitung(r, mode: str):
@@ -58,17 +59,19 @@ def hitung(r, mode: str):
 def tampil(r, mode: str) -> None:
     kep, alasan, rk, f, alr, hk_, nilai = hitung(r, mode)
     sc = sk.hitung(r, rk, f, alr, nilai, hk_, ctx_sesi(mode))
-    kolom = st.columns(4)
-    for c_, d in zip(kolom[:3], sc["dims"]):
-        c_.metric(d["nama"], f"{d['skor']}/10" if d["skor"] is not None else "N/A", d["label"] + ("" if d["andal"] or d["skor"] is None else " · belum andal"), delta_color="off")
-        if d["skor"] is not None:
-            c_.progress(min(d["skor"] / 10, 1.0))
-    kolom[3].metric("Rata-rata", f"{sc['rata']}/10" if sc["rata"] is not None else "N/A",
-                    f"{sk.label(sc['rata'])} · {sc['n_andal']} dimensi andal", delta_color="off")
-    if sc["rata"] is not None:
-        kolom[3].progress(min(sc["rata"] / 10, 1.0))
-    st.caption("Skor 1–10 = heuristik internal yang BELUM terbukti. `belum andal` = data tidak cukup (mis. Bandarmologi tanpa ledger ≥ 60 sesi); dimensi itu tidak dipakai untuk vonis bila ada ≥ 2 dimensi andal. "
-               + ("Rata-rata semua dimensi: " + str(sc["rata_semua"]) + "." if sc["rata_semua"] != sc["rata"] else ""))
+    kolom = st.columns(5)
+    for c_, d in zip(kolom[:4], sc["dims"]):
+        c_.metric(f"{d['kode']} · {d['nama'].split(' (')[0]}", f"{d['nilai']:.2f}" if d["nilai"] is not None else "NULL",
+                  (f"{d['nilai'] * 10:.1f}/10 · {d['arti']}" if d["nilai"] is not None else "belum dapat dinilai"), delta_color="off")
+        if d["nilai"] is not None:
+            c_.progress(d["nilai"])
+    kolom[4].metric("Total", f"{sc['total']:.2f}" if sc["total"] is not None else "N/A", f"coverage {sc['coverage']:.0%}", delta_color="off")
+    if sc["total"] is not None:
+        kolom[4].progress(min(sc["total"], 1.0))
+    st.caption("Skor diskrit 0 · 0,25 · 0,50 · 0,75 · 1,00 (×10 = skala 1–10). NULL = belum dapat dinilai, tidak dianggap nol. Total = rata-rata komponen valid; Score_Coverage = porsi komponen valid. "
+               "Heuristik internal yang BELUM terbukti. Hard gate di bawah dapat membatasi vonis walau Total tinggi.")
+    for g in sc["gates"]:
+        (st.error if g["berat"] == "AVOID" else st.warning)(f"**{g['gate']}** ({'membatasi ke HINDARI' if g['berat'] == 'AVOID' else 'membatasi ke TUNGGU'}): {g['alasan']}", icon="⛔" if g["berat"] == "AVOID" else "🚧")
     box = {"BELI": st.success, "TUNGGU": st.warning}.get(kep, st.error)
     sub = sc["ringkas"] + " · " + "; ".join(sc["ket"])
     box(f"### {r.params.kode} → {kep}\n{sub}", icon={"BELI": "🟢", "TUNGGU": "🟡"}.get(kep, "🔴"))
@@ -80,7 +83,7 @@ def tampil(r, mode: str) -> None:
         st.warning("Bendera: " + fl, icon="🚩")
     with st.expander("📐 Rincian skor (komponen, bukti pendukung dan berlawanan)"):
         for d in sc["dims"]:
-            st.markdown(f"**{d['nama']}: {d['skor'] if d['skor'] is not None else 'N/A'}/10 ({d['label']})**" + ("" if d["andal"] or d["skor"] is None else " · belum andal"))
+            st.markdown(f"**{d['kode']} {d['nama']}: {('%.2f' % d['nilai']) if d['nilai'] is not None else 'NULL'} ({d['arti']})**")
             if d["catatan"]:
                 st.caption(d["catatan"])
             if d["komponen"]:
@@ -90,6 +93,8 @@ def tampil(r, mode: str) -> None:
             c2_.markdown("**Berlawanan**\n" + ("\n".join(f"- {x}" for x in d["lawan"][:8]) or "- -"))
             for ln in d.get("lensa", []):
                 st.caption("Lensa bandar: " + ln)
+        st.markdown("**Kondisi invalidasi:** " + ("; ".join(sc["invalidasi"]) or "-"))
+        st.caption(f"Versi skor {sc['versi']} · kualitas data: {sc['data_quality']}")
     if mode == "cepat":
         st.caption("Mode **cepat**: keputusan sementara dari data dasar (harga, broker window, teknikal). Fundamental, dinamika bandar, Hengky, ritel belum dihitung.")
 
@@ -120,7 +125,7 @@ def tampil(r, mode: str) -> None:
     ubah = [x["kriteria"] for x in nilai["kriteria"] if x["status"] in ("tidak", "netral")] + \
            ([x["kriteria"] for x in hk_["checklist"]["kriteria"] if x["status"] in ("tidak", "netral") and x["inti"]] if hk_ else [])
     if kep != "BELI":
-        st.markdown(f"**Agar vonis menjadi BELI:** rata-rata skor ≥ 7,0 (sekarang {sc['rata'] if sc['rata'] is not None else 'N/A'}), tidak ada dimensi di bawah 5,0, harga di area beli, Hitung lengkap, aturan inti Hengky lolos. "
+        st.markdown(f"**Agar vonis menjadi BELI:** Total ≥ 0,70 (sekarang {('%.2f' % sc['total']) if sc['total'] is not None else 'N/A'}), coverage ≥ 75%, tidak ada komponen < 0,50, harga di area beli, tanpa hard gate, Hitung lengkap, aturan inti Hengky lolos. "
                     + ("**Kriteria yang BELUM terpenuhi dan menahan skor** (jika terpenuhi, skor naik): " + "; ".join(f"'{u}'" for u in ubah[:6]) + "." if ubah else "Tidak ada kriteria checklist yang tertinggal."))
     if rk:
         sup = rk["sup"][0]["harga"] if rk["sup"] else None

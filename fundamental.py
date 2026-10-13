@@ -548,7 +548,8 @@ def analisa(info: dict | None, is_raw, bs_raw, cf_raw, keystat_raw, harga: float
                   roe=roe, roa=roa, pbv=pbv, per=per_, per_norm=per_norm, rev_ttm=rev_ttm, np_ttm=np_ttm, cfo_ttm=cfo_ttm, fcf_ttm=fcf_ttm, capex_ttm=capex_ttm,
                   ekuitas=e_last, aset=a_last, liab=l_last, rugi_kuartal=int(sum(1 for x in npl[-4:] if pd.notna(x) and x < 0)),
                   n_np_kuartal=int(sum(1 for x in npl[-4:] if pd.notna(x))), rev_kuartal=[None if pd.isna(x) else float(x) for x in pnl_rows[rev_nm][-4:]],
-                  np_kuartal=[None if pd.isna(x) else float(x) for x in npl[-4:]])
+                  np_kuartal=[None if pd.isna(x) else float(x) for x in npl[-4:]],
+                  cfo_kuartal=[None if pd.isna(x) else float(x) for x in cf_rows["Arus kas operasi (CFO)"][-4:]])
 
     return dict(nama=info.get("name") or "", sektor=info.get("sector") or "", subsektor=info.get("subsector") or "",
                 bank=bank, periode=L, kolom=[label(k) for k in kol],

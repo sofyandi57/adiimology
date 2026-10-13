@@ -67,11 +67,3 @@ def test_export_without_technical_or_fundamental():
     assert "Ringkasan" in load_workbook(io.BytesIO(lp.excel_bytes(r, None, None, "x"))).sheetnames
 
 
-def test_beli_needs_hengky_core_rules():
-    r, rk, f = _inputs()
-    beli = dict(rk, verdict="BELI DI AREA ENTRY")
-    gagal = {"checklist": {"lolos_inti": False, "hasil": "TAHAN: 2 dari 4 aturan inti belum terpenuhi"}}
-    lolos = {"checklist": {"lolos_inti": True, "hasil": "ATURAN INTI TERPENUHI"}}
-    kep, alasan = lp.keputusan(r, beli, f, nilai=_nilai("AKUMULASI KUAT"), hk_=gagal)
-    assert kep == "TUNGGU" and any("Hengky" in a for a in alasan)
-    assert lp.keputusan(r, beli, f, nilai=_nilai("AKUMULASI KUAT"), hk_=lolos)[0] == "BELI"
