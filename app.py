@@ -1004,7 +1004,7 @@ if submitted:
                 st.session_state["_validasi_status"] = None
             ctx_x = dict(mode="lengkap" if lengkap else "cepat", konteks=st.session_state.get("konteks"), ledger=st.session_state.get("ledger_sinyal"),
                          flow=st.session_state.get("flow"), validasi=st.session_state.get("_validasi_status"))
-            exp["csv"] = __import__("ledger_calc").csv_ai(led_)
+            exp["csv"] = __import__("ledger_calc").ekspor_ai(led_)     # tabel terpisah: broker_flow_daily, market_daily, period_end_summary, features
             with st.spinner("Menyiapkan dokumen ekspor..."):
                 for jenis, fn in (("xlsx", lp.excel_bytes), ("pdf", lp.pdf_bytes)):
                     try:
@@ -1051,9 +1051,9 @@ if exp:
     if "md" in exp:
         st.sidebar.download_button("📝 Unduh Markdown (untuk AI)", exp["md"], f"{exp['nama']}.md", mime="text/markdown", width="stretch",
                                    help=f"Struktur sama dengan TXT tetapi berupa heading, tabel, dan daftar ({len(exp['md']) / 1024:.1f} KB).")
-    if "csv" in exp:
-        st.sidebar.download_button("📈 Unduh CSV ledger (untuk AI)", exp["csv"], f"{exp['nama']}_ledger.csv", mime="text/csv", width="stretch",
-                                   help="Ledger harian broker relevan (net lot, kumulatif, harga, status, proksi biaya). Kosong bila ledger belum diperbarui.")
+    for nm_, isi_ in (exp.get("csv") if isinstance(exp.get("csv"), dict) else {}).items():
+        st.sidebar.download_button(f"📈 Unduh {nm_} (untuk AI)", isi_, f"{exp['nama']}_{nm_}", mime="text/csv", width="stretch",
+                                   help="Ledger broker dipecah per tabel (join via trade_date); volume pasar hanya di market_daily. Kosong bila ledger belum diperbarui.")
     for jenis in ("xlsx", "pdf", "txt", "md"):
         if f"{jenis}_err" in exp:
             st.sidebar.error(f"Gagal membuat {jenis.upper()}: {exp[f'{jenis}_err']}")
