@@ -56,7 +56,7 @@ def test_txt_is_compact_and_complete():
         assert h in out, h
     assert "## MINAT RITEL" in out and "arah=TURUN" in out and "status=RITEL KELUAR / DIKERINGKAN" in out and "SID turun = minat ritel menurun" in out
     assert "harga DI BAWAH referensi transaksi" in out and "nyangkut=NYANGKUT" not in out and "## BANDARMOLOGI: KERANGKA BUKTI" in out and "P(naik)" in out and "n_eff" in out and "area_beli=" in out and "UNTUK AI:" in out
-    assert len(out.encode()) < 24_000, len(out.encode())
+    assert len(out.encode()) < 28_000, len(out.encode())        # bertambah: skor TA/FA/BA/CA, aliran 3 lapisan, situasi khusus, narasi fundamental
     assert all(ord(ch) < 0x2500 for ch in out)               # tanpa emoji/dekorasi
 
 

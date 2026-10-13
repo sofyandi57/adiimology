@@ -549,7 +549,12 @@ def analisa(info: dict | None, is_raw, bs_raw, cf_raw, keystat_raw, harga: float
                   ekuitas=e_last, aset=a_last, liab=l_last, rugi_kuartal=int(sum(1 for x in npl[-4:] if pd.notna(x) and x < 0)),
                   n_np_kuartal=int(sum(1 for x in npl[-4:] if pd.notna(x))), rev_kuartal=[None if pd.isna(x) else float(x) for x in pnl_rows[rev_nm][-4:]],
                   np_kuartal=[None if pd.isna(x) else float(x) for x in npl[-4:]],
-                  cfo_kuartal=[None if pd.isna(x) else float(x) for x in cf_rows["Arus kas operasi (CFO)"][-4:]])
+                  cfo_kuartal=[None if pd.isna(x) else float(x) for x in cf_rows["Arus kas operasi (CFO)"][-4:]],
+                  periode=[label(k) for k in kol][-4:], gpm_seri=[None if pd.isna(x) else float(x) for x in gpm[-4:]],
+                  npm_seri=[None if pd.isna(x) else float(x) for x in npm[-4:]], rev_yoy_seri=[None if pd.isna(x) else float(x) for x in g_rev_yoy[-4:]],
+                  np_yoy_seri=[None if pd.isna(x) else float(x) for x in g_np_yoy[-4:]], div_ttm=ltm_value(div_ytd, div)[0] if div_ytd is not None else float("nan"),
+                  saham=saham, mcap=mcap, eps=_ratio(np_ttm, saham), eps_norm=_ratio(np_norm, saham), bvps=_ratio(e_last, saham), kas=kas_last,
+                  gearing=_ratio(utang_last, e_last) if pd.notna(utang_last) else float("nan"), np_norm=np_norm, rev_basis=rev_basis, np_basis=np_basis)
 
     return dict(nama=info.get("name") or "", sektor=info.get("sector") or "", subsektor=info.get("subsector") or "",
                 bank=bank, periode=L, kolom=[label(k) for k in kol],

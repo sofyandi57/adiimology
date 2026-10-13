@@ -443,6 +443,36 @@ def ringkas(r: ad.Result) -> dict:
             "Upside realistis %": r.calc["upside_real"] * 100, "Alasan": "; ".join(r.alasan[:2])}
 
 
+def tampil_narasi_fa(f: dict, harga, kode: str) -> None:
+    """Narasi fundamental tajam: mesin laba, kualitas laba, valuasi & skenario EPS x PER, label, pantauan, rujukan data eksternal."""
+    import narasi_fundamental as nf_
+    if not harga:
+        return
+    n = nf_.susun(f, harga, kode)
+    if not n:
+        return
+    with st.container(border=True):
+        st.markdown("#### 🧭 Narasi fundamental")
+        st.markdown(n["tesis"])
+        st.markdown(" ".join(f"`{a}`" for a, _ in n["label"]))
+        c1_, c2_ = st.columns(2)
+        with c1_:
+            st.markdown("**Mesin laba**\n" + "\n".join(f"- {x}" for x in n["mesin"]))
+            if n["kualitas"]:
+                st.markdown("**Kualitas laba & neraca**\n" + "\n".join(f"- {x}" for x in n["kualitas"]))
+        with c2_:
+            st.markdown("**Valuasi & skenario**\n" + "\n".join(f"- {x}" for x in n["valuasi"]))
+            if len(n["label"]) > 1:
+                st.markdown("**Label lain**\n" + "\n".join(f"- **{a}**: {b}" for a, b in n["label"][1:]))
+        if n["grid"] is not None:
+            st.caption(f"Matriks harga = EPS LTM × (1 + pertumbuhan EPS) × PER. PER sekarang ≈ {n['per_now']:.1f}x. Ini peta skenario, bukan target.")
+            st.dataframe(n["grid"], hide_index=True, width="stretch",
+                         column_config={c: st.column_config.NumberColumn(format="%,.0f") for c in n["grid"].columns if c.startswith("PER")})
+        st.markdown("**Pantau (review tiap kuartal)**\n" + "\n".join(f"- {x}" for x in n["pantau"]))
+        st.markdown("**Rujukan data eksternal** (tidak diambil aplikasi; buka langsung):\n" + "\n".join(f"- [{r_['nama']}]({r_['url']}) — {r_['untuk']}" for r_ in n["rujukan"]))
+        st.caption(f"Horizon: {n['horizon']}. {n['catatan']} Kerangka terinspirasi metode investor fundamental (mis. Filbert Gameplan), bukan pendapat penulisnya.")
+
+
 def tampil_flow(fl: dict | None) -> None:
     """Aliran transaksi broker dalam 3 lapisan: observed flow, price confirmation, interpretation (bandar_flow)."""
     import bandar_flow as bf_
@@ -1429,6 +1459,7 @@ with tab_fund:
         st.subheader(f"{kode_f} · {f['nama']}" if f["nama"] else kode_f)
         st.caption(" · ".join(x for x in [f["sektor"], f["subsektor"], f"laporan terakhir {f['periode']}",
                                           "nominal tabel dalam Rp miliar, per kuartal (bukan kumulatif)"] if x))
+        tampil_narasi_fa(f, state[1].harga if state and state[0] == "ok" else None, kode_f)
         for p_ in f["peringatan"]:
             st.warning(p_, icon="⚠️")
         for s_ in f["sorotan"]:
