@@ -1032,8 +1032,10 @@ if submitted:
                 w_s = st.session_state.get("_hist_waktu") or dt.datetime.now(dt.timezone.utc)
                 simpan_snapshot(r0.params.kode, w_s, "lengkap" if lengkap else "cepat", kep_s, exp.get("md"), exp.get("txt"))
                 simpan_keputusan(r0.params.kode, w_s, "lengkap" if lengkap else "cepat", kep_s, r0, rk_, keputusan_ui.alasan_ringkas(kep_s, alas_s, 5), skor_k)
-            except Exception:
-                pass
+                st.session_state.pop("_save_err", None)
+            except Exception as e:     # jangan mematikan aplikasi, tetapi JANGAN diam: tampilkan di tab Histori
+                import traceback
+                st.session_state["_save_err"] = f"{type(e).__name__}: {e} | " + traceback.format_exc(limit=3).replace("\n", " ")[-400:]
 
 exp = st.session_state.get("export")
 if exp:
@@ -1484,7 +1486,11 @@ with tab_multi:
                 try:
                     rr_ = ad.analyze(client, replace(params, kode=cd, broker_manual=None, lot_per_papan_override=0.0))
                     rows.append(ringkas(rr_))
-                    catat_histori(rr_)
+                    w_m = catat_histori(rr_)
+                    try:
+                        simpan_keputusan(rr_.params.kode, w_m, "multi-saham", None, rr_, None, "baris Multi-saham: hanya skenario Adimology, tanpa skor TA/FA/BA/CA")
+                    except Exception:
+                        pass
                 except Exception as e:
                     rows.append({"Kode": cd, "Skenario Adimology": "ERROR", "Alasan": str(e)})
                 prog.progress((i + 1) / len(codes))
@@ -1502,6 +1508,8 @@ with tab_ledger:
 
 with tab_hist:
     hdf = load_histori()
+    if st.session_state.get("_save_err"):
+        st.error("Hitungan terakhir TIDAK tersimpan lengkap ke histori (vonis/skor). Rincian teknis: " + st.session_state["_save_err"], icon="⚠️")
     if not histori_url():
         st.warning("Database histori belum diatur, histori hanya tersimpan selama sesi ini "
                    "(hilang saat refresh/Keluar). Isi `[connections.histori] url` di Secrets.")
@@ -1525,8 +1533,12 @@ with tab_hist:
         sk_rows = [skor_map.get((e_, w_), (None,) * 6) for e_, w_ in zip(hdf["Nama Emiten"], hdf["Tanggal & Waktu Pengecekan"])]
         hdf.insert(1, "Vonis", [k[0] or "–" for k in kk])
         hdf.insert(2, "Mode", [k[1] or "" for k in kk])
+        def _fs(v, pct=False):
+            if v is None or pd.isna(v):
+                return "–"
+            return f"{v:.0%}" if pct else f"{v:.2f}"
         for i_, nm_ in enumerate(("TA", "FA", "BA", "CA", "Total", "Coverage")):
-            hdf.insert(3 + i_, nm_, [v[i_] if v[i_] is not None and pd.notna(v[i_]) else None for v in sk_rows])
+            hdf.insert(3 + i_, nm_, [_fs(v[i_], nm_ == "Coverage") for v in sk_rows])
         hdf["Alasan utama"] = [(k[2] or ("belum tercatat (hitungan sebelum fitur vonis atau batch Multi-saham)" if not k[0] else "-")) for k in kk]
         terakhir = hdf[hdf["Vonis"] != "–"].drop_duplicates("Nama Emiten")
         hindari = terakhir[terakhir["Vonis"].str.startswith("HINDARI")]
@@ -1538,8 +1550,7 @@ with tab_hist:
         st.dataframe(sty, hide_index=True, width="stretch",
                      column_config={**{c: st.column_config.NumberColumn(format="%,.0f") for c in ["Target Adimologi", "Stop Loss", "Current Price"]},
                                     "Alasan utama": st.column_config.TextColumn(width="large"),
-                                    **{c: st.column_config.NumberColumn(format="%.2f") for c in ("TA", "FA", "BA", "CA", "Total")},
-                                    "Coverage": st.column_config.NumberColumn(format="percent")})
+                                    })
         with st.expander("Vonis terakhir per saham (ringkas)"):
             st.dataframe(terakhir[["Nama Emiten", "Vonis", "Alasan utama", "Tanggal & Waktu Pengecekan", "Current Price"]], hide_index=True, width="stretch")
         h1, h2, h3 = st.columns([1, 1, 1])
@@ -1548,7 +1559,8 @@ with tab_hist:
         if h2.button("Hapus histori", disabled=not yakin):
             hapus_histori()
             st.rerun()
-        st.caption("Vonis = keputusan aplikasi saat hitungan itu dibuat (Total dari TA/FA/BA/CA + hard gate). NULL/kosong = komponen belum dapat dinilai. "
+        st.caption("Vonis = keputusan aplikasi saat hitungan itu dibuat (Total dari TA/FA/BA/CA + hard gate). Tanda – pada skor: hitungan dibuat sebelum sistem skor v3 (14 Okt 2026 01:05 WIB), "
+                   "berasal dari Multi-saham (tanpa skor), atau komponen itu NULL (belum dapat dinilai). Hitung ulang saham tersebut untuk mengisi skornya. "
                    "Target Adimologi = target realistis dan hanya skenario, BUKAN dasar keputusan. Menampilkan 1.000 catatan terbaru. "
                    "Tabel skor historis (di bawah) TIDAK ikut terhapus: snapshot skor bersifat permanen.")
     sdf2 = daftar_skor()
