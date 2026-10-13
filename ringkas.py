@@ -21,6 +21,7 @@ import laporan as lp
 import konteks as ktx
 import skor as sk
 import bandar_flow as bf
+import situasi_khusus as sxk
 import ledger_calc as lgc
 
 HORIZON = (5, 10, 20)
@@ -621,6 +622,7 @@ def _baris(r, rk, f, waktu: str, ovn=None, alr=None, b200=None, hk_=None, nilai=
     L += _audit_lines(r, rk, f, nilai, hk_, kep, alasan, ritel, b200)
     L += sk.baris_laporan(sk.hitung(r, rk, f, alr, nilai, hk_, ctx or {}))
     L += bf.baris((ctx or {}).get('flow'))
+    L += sxk.baris((ctx or {}).get('situasi'))
     L += ktx.baris_laporan((ctx or {}).get('konteks'))
     L += lgc.baris_ai(ledger, r.params.kode)
     L.append("## BATASAN DATA & ENDPOINT")

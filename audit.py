@@ -103,13 +103,34 @@ def validasi(r, rk: dict | None, f: dict | None, posisi: list[dict], waktu: dt.d
 
 
 # ------------------------------------------------------------ aksi korporasi
+def _tgl_aksi(pl: dict):
+    """Tanggal aksi korporasi dari payload kalender (Date / TradeDate / RecDate / Datetime / DateStr yyyymmdd)."""
+    import datetime as _dt
+    for k in ("Date", "TradeDate", "Datetime", "RecDate", "CumDate", "ExDate"):
+        v = (pl or {}).get(k)
+        if v:
+            try:
+                return _dt.date.fromisoformat(str(v)[:10])
+            except ValueError:
+                pass
+    v = str((pl or {}).get("DateStr") or "")
+    if len(v) == 8 and v.isdigit():
+        try:
+            return _dt.date(int(v[:4]), int(v[4:6]), int(v[6:]))
+        except ValueError:
+            return None
+    return None
+
+
 def parse_aksi(raw) -> list[dict]:
+    """Kalender aksi korporasi. 'ringkas' untuk tampilan (dipotong); 'teks' = isi payload UTUH (agenda RUPS dsb.) untuk deteksi kata kunci."""
     data = raw.get("data", []) if isinstance(raw, dict) else (raw or [])
     out = []
     for x in data:
         pl = x.get("payload") if isinstance(x, dict) else None
         ring = ", ".join(f"{k}={v}" for k, v in list((pl or {}).items())[:6])[:140]
-        out.append(dict(type=str(x.get("type", "")), ringkas=ring))
+        teks = " ".join(str(v) for v in (pl or {}).values())
+        out.append(dict(type=str(x.get("type", "")), ringkas=ring, teks=teks, tgl=_tgl_aksi(pl or {})))
     return out
 
 

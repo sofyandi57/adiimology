@@ -199,7 +199,7 @@ def _sa_url(url: str) -> str:
 
 
 @st.cache_resource(show_spinner=False)
-def histori_engine(url: str, versi: int = 6) -> sa.Engine:     # naikkan versi bila ada tabel baru (cache resource bertahan antar-deploy)
+def histori_engine(url: str, versi: int = 7) -> sa.Engine:     # naikkan versi bila ada tabel baru (cache resource bertahan antar-deploy)
     eng = sa.create_engine(_sa_url(url), pool_pre_ping=True)
     HIST_META.create_all(eng)
     try:   # migrasi ringan: kolom alasan pada tabel keputusan yang sudah ada di Neon
@@ -246,6 +246,43 @@ HIST_SKOR = sa.Table(
     sa.Column("ta_score", sa.Float), sa.Column("fa_score", sa.Float), sa.Column("ba_score", sa.Float), sa.Column("ca_score", sa.Float),
     sa.Column("total_score", sa.Float), sa.Column("score_coverage", sa.Float), sa.Column("signal", sa.String(20)),
     sa.Column("scoring_version", sa.String(60)), sa.Column("data_quality", sa.String(200)), sa.Column("notes", sa.Text))
+
+
+HIST_CATATAN = sa.Table(
+    "catatan_khusus", HIST_META,                   # catatan manual situasi khusus (term sheet, tenggat, rekam jejak pihak) yang tidak ada di data Invezgo
+    sa.Column("id", sa.Integer, primary_key=True, autoincrement=True), sa.Column("ticker", sa.String(10), nullable=False, index=True),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False), sa.Column("jenis", sa.String(60)), sa.Column("teks", sa.Text), sa.Column("tenggat", sa.Date))
+
+
+def simpan_catatan(kode: str, jenis: str, teks: str, tenggat) -> None:
+    row = dict(ticker=kode, created_at=dt.datetime.now(dt.timezone.utc), jenis=jenis, teks=teks[:1000], tenggat=tenggat)
+    url = histori_url()
+    if url:
+        with histori_engine(url).begin() as c:
+            c.execute(HIST_CATATAN.insert().values(**row))
+    else:
+        st.session_state.setdefault("catatan_log", []).append(row)
+
+
+def daftar_catatan(kode: str) -> list[dict]:
+    if not kode:
+        return []
+    rows = [x for x in st.session_state.get("catatan_log", []) if x["ticker"] == kode]
+    url = histori_url()
+    if url:
+        try:
+            with histori_engine(url).connect() as c:
+                rows += [dict(m) for m in c.execute(sa.select(HIST_CATATAN).where(HIST_CATATAN.c.ticker == kode).order_by(HIST_CATATAN.c.id.desc())).mappings()]
+        except Exception as e:
+            st.session_state["_db_err"] = type(e).__name__
+    return rows
+
+
+def hapus_catatan(id_: int) -> None:
+    url = histori_url()
+    if url and id_:
+        with histori_engine(url).begin() as c:
+            c.execute(HIST_CATATAN.delete().where(HIST_CATATAN.c.id == id_))
 
 
 def simpan_skor(r, waktu: dt.datetime, sc: dict, mode: str) -> None:
@@ -722,7 +759,7 @@ def ambil_fundamental(client: ad.InvezgoClient, kode: str, harga: float) -> dict
     f = fd.analisa(opsional(f"/analysis/information/{kode}"), lap["IS"], lap["BS"], lap["CF"],
                    opsional(f"/analysis/keystat/{kode}", {"type": "Q", "limit": 8}), harga, fy=fy)
     try:
-        f["aksi"] = au.parse_aksi(client.get("/analysis/calendar", {"code": kode, "page": 1, "limit": 15}))
+        f["aksi"] = au.parse_aksi(client.get("/analysis/calendar", {"code": kode, "page": 1, "limit": 30}))
         f["aksi_status"] = f"ADA {len(f['aksi'])} EVENT" if f["aksi"] else "TIDAK ADA EVENT"
     except Exception:
         f["aksi"], f["aksi_status"] = None, "TIDAK DIUKUR (endpoint gagal)"
@@ -831,6 +868,8 @@ with st.sidebar.form("param"):
         dist = st.number_input("Ambang distribusi (% dari net window)", 1.0, 100.0, 25.0, 5.0) / 100
         modal = st.number_input("Modal (Rp)", 100_000, 10_000_000_000, 10_000_000, 1_000_000)
         risiko = st.number_input("Risiko per trade (%)", 0.1, 10.0, 1.0, 0.1) / 100
+        maks_spek = st.number_input("Maks posisi saham spekulatif / backdoor (% modal)", 0.5, 20.0, 2.0, 0.5,
+                                    help="Untuk saham dalam situasi khusus (backdoor, perubahan pengendali, restrukturisasi modal): batas nilai posisi, karena gap/batal transaksi tidak tertahan stop loss.") / 100
         min_nilai_m = st.number_input("Min nilai transaksi harian untuk 'likuid' (Rp miliar)", 0.0, 1000.0, 5.0, 1.0,
                                       help="Aturan Hengky: trade hanya saham likuid. Ambang ini pilihan kami, bukan angka dari materi.")
         fee_b = st.number_input("Fee beli (%)", 0.0, 2.0, 0.15, 0.01) / 100
@@ -843,6 +882,7 @@ lengkapi = bool(st.session_state.pop("_lengkapi", False))
 submitted = sub_cepat or sub_lengkap or lengkapi
 lengkap = sub_lengkap or lengkapi
 
+st.session_state["maks_spek_pct"] = maks_spek
 params = ad.Params(
     kode=kode, tanggal_akhir=tgl_akhir if pakai_tgl else None, window_hari=window, investor=investor,
     broker_manual=broker_manual or None,
@@ -1002,8 +1042,11 @@ if submitted:
                 st.session_state["_validasi_status"] = au.validasi(r0, rk_, f_, au.skenario_posisi(r0, rk_))["status"]
             except Exception:
                 st.session_state["_validasi_status"] = None
+            st.session_state["catatan_khusus"] = daftar_catatan(r0.params.kode)
             ctx_x = dict(mode="lengkap" if lengkap else "cepat", konteks=st.session_state.get("konteks"), ledger=st.session_state.get("ledger_sinyal"),
                          flow=st.session_state.get("flow"), validasi=st.session_state.get("_validasi_status"))
+            import keputusan_ui as kui_
+            ctx_x["situasi"] = kui_.situasi_sesi()
             exp["csv"] = __import__("ledger_calc").csv_ai(led_)
             with st.spinner("Menyiapkan dokumen ekspor..."):
                 for jenis, fn in (("xlsx", lp.excel_bytes), ("pdf", lp.pdf_bytes)):
@@ -1107,6 +1150,7 @@ tab_kep, tab_tek, tab_bandar, tab_fund, tab_alat = st.tabs(
 tab_main = tab_kep
 state = st.session_state.get("res")
 kode_aktif = state[1].params.kode if state and state[0] == "ok" else ""
+st.session_state["catatan_khusus"] = daftar_catatan(kode_aktif)
 
 
 def kepala() -> None:
@@ -1142,6 +1186,23 @@ with tab_main:
         r: ad.Result = state[1]
         import keputusan_ui
         keputusan_ui.tampil(r, st.session_state.get("mode", "lengkap"))
+        with st.expander(f"📝 Catatan situasi khusus {r.params.kode} (manual: term sheet, tenggat, rekam jejak pihak)"):
+            st.caption("Untuk informasi yang tidak ada di data Invezgo (keterbukaan/berita sering kosong). Catatan jenis backdoor/term sheet/rights issue mengaktifkan kartu Situasi Khusus.")
+            with st.form("form_catatan", clear_on_submit=True):
+                import situasi_khusus as sxk_
+                jn_ = st.selectbox("Jenis", sxk_.JENIS_MANUAL)
+                tk_ = st.text_area("Isi catatan", placeholder="mis. Term sheet penjualan saham pengendali ke Grup X diperpanjang; sumber: artikel/keterbukaan tgl ...")
+                ada_tg = st.checkbox("Ada tenggat")
+                tg_ = st.date_input("Tenggat", value=dt.date.today() + dt.timedelta(days=60))
+                if st.form_submit_button("Simpan catatan") and tk_.strip():
+                    simpan_catatan(r.params.kode, jn_, tk_.strip(), tg_ if ada_tg else None)
+                    st.rerun()
+            for c_ in st.session_state.get("catatan_khusus") or []:
+                k1_, k2_ = st.columns([6, 1])
+                k1_.markdown(f"- **{c_.get('jenis')}**: {c_.get('teks')}" + (f" · tenggat **{c_['tenggat']}**" if c_.get("tenggat") else ""))
+                if c_.get("id") and k2_.button("Hapus", key=f"hapus_cat_{c_['id']}"):
+                    hapus_catatan(c_["id"])
+                    st.rerun()
         with tab_pen:
             tampil_flow(st.session_state.get("flow"))
             tampil_penilaian(r, st.session_state.get("nilai") or bd.penilaian(r))

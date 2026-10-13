@@ -339,8 +339,10 @@ CA_DILUSI = ("hmetd", "right issue", "rights issue", "private placement", "penam
 CA_POSITIF = {"buyback": ("buyback", "pembelian kembali"), "dividen": ("dividen", "dividend")}   # dihitung per KATEGORI (dividen & dividend = satu kategori)
 
 
-def skor_ca(konteks: dict | None, f: dict | None = None) -> dict:
-    """CA dari keterbukaan, berita, insider, notasi khusus, kalender aksi korporasi. NULL bila tidak ada sumber yang terbaca."""
+def skor_ca(konteks: dict | None, f: dict | None = None, situasi: dict | None = None) -> dict:
+    """CA dari keterbukaan, berita, insider, notasi khusus, kalender aksi (agenda RUPS dibaca UTUH; hanya aksi mendatang / <= 180 hari).
+    NULL bila tidak ada sumber yang terbaca. Situasi khusus (backdoor) TIDAK dinilai baik/buruk di sini: ia memicu gate EVENT_DRIVEN_WARNING."""
+    import datetime as _dt
     k = konteks or {}
     teks, sumber = [], []
     for nm in ("disclosure", "news"):
@@ -349,9 +351,14 @@ def skor_ca(konteks: dict | None, f: dict | None = None) -> dict:
             sumber.append(nm)
             teks += [i["judul"].lower() for i in x.get("items", [])]
     aksi = (f or {}).get("aksi")
+    today = _dt.date.today()
     if aksi:
         sumber.append("kalender aksi")
-        teks += [(a.get("type", "") + " " + a.get("ringkas", "")).lower() for a in aksi]
+        for a in aksi:
+            tg = a.get("tgl")
+            if tg is not None and (today - tg).days > 180:
+                continue                                     # aksi lama (mis. rights issue bertahun lalu) tidak relevan
+            teks.append((a.get("type", "") + " " + (a.get("teks") or a.get("ringkas", ""))).lower())
     ins = k.get("insider") or {}
     if ins.get("status") == "ok":
         sumber.append("insider")
@@ -360,10 +367,16 @@ def skor_ca(konteks: dict | None, f: dict | None = None) -> dict:
         sumber.append("notasi")
     if not sumber:
         return _dim("Aksi korporasi & keterbukaan", None, [], [], ["[OBS] keterbukaan/berita/insider/kalender tidak diambil (Hitung lengkap) atau gagal: CA = NULL"], False, "N/A", kode="CA")
+    import re as _re
     nilai, sup, lawan, gates = 0.5, [], [], []
+    sx_aktif = bool(situasi and situasi.get("aktif"))
     berat = sorted({w for t in teks for w in CA_BERAT if w in t})
-    dil = sorted({w for t in teks for w in CA_DILUSI if w in t})
+    pmt = [t for t in teks if _re.search(r"pmthmetd|tanpa hak memesan|private placement", t)]
+    hm = [t for t in teks if _re.search(r"\bpmhmetd\b|(?<!tanpa )hak memesan efek terlebih dahulu|\bhmetd\b|right[s]? issue|obligasi wajib konversi", t)]
     pos = sorted({kat for t in teks for kat, kata in CA_POSITIF.items() if any(w in t for w in kata)})
+    if "buyback" in pos and sx_aktif:
+        pos.remove("buyback")
+        lawan.append("[INF] rencana buyback di tengah situasi khusus: tidak dihitung positif (kelayakan dana dan tujuan belum diverifikasi)")
     if pos:
         nilai = 0.75 if len(pos) == 1 else 1.0
         contoh = [t for t in teks if any(w in t for kat in pos for w in CA_POSITIF[kat])][:3]
@@ -374,9 +387,16 @@ def skor_ca(konteks: dict | None, f: dict | None = None) -> dict:
     if ins.get("status") == "ok" and ins.get("pengendali_jual"):
         nilai = min(nilai, 0.25)
         lawan.append("[OBS] pemegang saham pengendali menjual dalam 120 hari")
-    if dil:
+    if pmt:
         nilai = min(nilai, 0.25)
-        lawan.append("[OBS] potensi dilusi: " + ", ".join(dil) + " | " + " | ".join(t[:90] for t in teks if any(w in t for w in dil))[:250])
+        lawan.append("[OBS] penambahan modal TANPA HMETD / private placement (investor publik tidak bisa ikut): " + " | ".join(t[:100] for t in pmt[:2]))
+    if hm:
+        nilai = min(nilai, 0.25)
+        lawan.append("[OBS] rights issue / HMETD (dilusi bagi yang tidak menebus; besaran belum terbaca dari data): " + " | ".join(t[:100] for t in hm[:2]))
+    dw = (situasi or {}).get("dilusi_waran")
+    if dw is not None and dw >= 0.10:
+        nilai = min(nilai, 0.5)
+        lawan.append(f"[OBS] sisa waran ≈ {dw:.0%} dari saham beredar: dilusi bertahap")
     if nt.get("ada"):
         nilai = min(nilai, 0.25)
         lawan.append("[OBS] notasi khusus BEI: " + "; ".join(nt.get("teks", [])[:2]))
@@ -385,13 +405,18 @@ def skor_ca(konteks: dict | None, f: dict | None = None) -> dict:
         nilai = 0.0
         lawan.append("[OBS] peristiwa berat: " + ", ".join(berat) + " | " + " | ".join(t[:90] for t in teks if any(w in t for w in berat))[:250])
         gates.append(dict(gate="FUNDAMENTAL_RED_FLAG", berat="AVOID", alasan="peristiwa berat: " + ", ".join(berat)))
-    if not (pos or dil or berat or nt.get("ada") or ins.get("pengendali_jual")):
+    if sx_aktif:
+        gates.append(dict(gate="EVENT_DRIVEN_WARNING", berat="WATCH",
+                          alasan=f"{situasi['jenis']} (tahap: {situasi['tahap_teks']}); spekulatif, posisi maksimal {situasi['posisi']['maks_pct']:.1%} modal"))
+        lawan += [f"[OBS] {b_}" for b_ in situasi.get("flags", [])]
+    if not (pos or pmt or hm or berat or nt.get("ada") or ins.get("pengendali_jual") or sx_aktif):
         sup.append("[OBS] tidak ada aksi korporasi/keterbukaan bermakna yang terdeteksi (netral)")
-    aturan = ("mulai 0,50 (netral) · 1 kategori positif (buyback ATAU dividen) = 0,75 · 2 kategori (buyback DAN dividen) = 1,00 · insider net beli +0,25 · "
-              "pengendali jual / dilusi (HMETD, rights issue, private placement) / notasi khusus = maks 0,25 · PKPU/pailit/delisting/suspensi = 0")
-    d = _dim("Aksi korporasi & keterbukaan", _skala(nilai * 10, 10), [dict(nama="Sumber terbaca", poin=nilai, maks=1, detail=", ".join(sumber) + f" ({len(teks)} judul/aksi)"),
+    aturan = ("mulai 0,50 · 1 kategori positif (buyback ATAU dividen) = 0,75 · keduanya = 1,00 · insider net beli +0,25 · "
+              "rights issue/HMETD, PMTHMETD/private placement, pengendali jual, notasi khusus = maks 0,25 · sisa waran >= 10% = maks 0,50 · "
+              "PKPU/pailit/delisting/suspensi = 0 · buyback saat situasi khusus tidak dihitung positif · aksi kalender > 180 hari diabaikan")
+    d = _dim("Aksi korporasi & keterbukaan", _skala(nilai * 10, 10), [dict(nama="Sumber terbaca", poin=nilai, maks=1, detail=", ".join(sumber) + f" ({len(teks)} judul/aksi relevan)"),
                                                                        dict(nama="Aturan CA", poin=None, maks=None, detail=aturan)], sup, lawan,
-             len(sumber) >= 2, "Deteksi kata kunci pada judul keterbukaan/berita; baca dokumen aslinya sebelum memutuskan.", [], frac=nilai, kode="CA")
+             len(sumber) >= 2, "Deteksi kata kunci pada judul keterbukaan/berita dan teks agenda kalender; baca dokumen aslinya sebelum memutuskan.", [], frac=nilai, kode="CA")
     d["gates"] = gates
     return d
 
@@ -415,7 +440,7 @@ def hitung(r, rk, f, alr, nilai, hk_, ctx: dict | None = None) -> dict:
     ctx = ctx or {}
     mode = ctx.get("mode", "lengkap")
     ledger, konteks, flow = ctx.get("ledger"), ctx.get("konteks"), ctx.get("flow")
-    dims = [skor_teknikal(rk, ledger), skor_fundamental(f, konteks), skor_ba(flow, ledger), skor_ca(konteks, f)]
+    dims = [skor_teknikal(rk, ledger), skor_fundamental(f, konteks), skor_ba(flow, ledger), skor_ca(konteks, f, ctx.get("situasi"))]
     valid = [d for d in dims if d["nilai"] is not None]
     total = round(float(np.mean([d["nilai"] for d in valid])), 3) if valid else None
     coverage = len(valid) / 4
@@ -472,9 +497,16 @@ def hitung(r, rk, f, alr, nilai, hk_, ctx: dict | None = None) -> dict:
     alasan.append(f"Skenario Adimology: {r.verdict} (bukan dasar keputusan; belum terbukti di backtest)")
     dq = f"coverage {coverage:.0%}; BA {next(d.get('flow_label') for d in dims if d['kode'] == 'BA')}" + (f"; flow evidence {flow['evidence']}" if flow and flow.get("label") != "INSUFFICIENT_DATA" else "")
     rata10 = round(total * 10, 1) if total is not None else None
+    sx = ctx.get("situasi")
+    posisi = panduan_posisi(rata10, rk, sinyal)
+    if sx and sx.get("aktif"):
+        ps = sx["posisi"]
+        posisi["calon_pembeli"] = (f"SPEKULATIF ({sx['jenis']}): bila tetap masuk, MAKSIMAL {ps['maks_pct']:.1%} modal ≈ {ps['lot']:,} lot; anggap seluruh posisi bisa hilang "
+                                   "(gap/batal transaksi tidak tertahan stop loss). " + posisi["calon_pembeli"])
+        posisi["pemegang"] += f" Situasi khusus: jangan menambah melebihi {ps['maks_pct']:.1%} modal; pantau tanggal kunci dan kondisi batal."
     return dict(dims=dims, total=total, coverage=coverage, rata=rata10, rata_semua=rata10, rata_andal=rata10, min=mn, vonis=sinyal, ket=ket, gates=gates, flags=flags,
                 ringkas=ringkas, alasan=alasan, n_andal=sum(1 for d in dims if d["andal"]), versi=VERSI, invalidasi=inval, data_quality=dq,
-                posisi=panduan_posisi(rata10, rk, sinyal))
+                posisi=posisi, situasi=sx)
 
 
 def panduan_posisi(rata, rk, kep) -> dict:

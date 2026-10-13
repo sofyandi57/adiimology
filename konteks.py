@@ -186,8 +186,13 @@ def ambil(client, kode: str, tgl_akhir: dt.date, penuh: bool = True) -> dict:
     if penuh:
         coba("disclosure", lambda: kabar(client.get("/analysis/disclosure", {"code": kode, "page": 1, "limit": 10}), today=tgl_akhir))
         coba("news", lambda: kabar(client.get("/analysis/news", {"code": kode, "page": 1, "limit": 10}), today=tgl_akhir))
-        coba("insider", lambda: insider(client.get("/analysis/shareholder-insider", {"code": kode, "from": (tgl_akhir - dt.timedelta(days=120)).isoformat(),
-                                                                                    "to": tgl_akhir.isoformat(), "page": 1, "limit": 10}), today=tgl_akhir))
+        try:     # satu panggilan 365 hari: ringkasan insider 120 hari + data mentah untuk deteksi perubahan pengendali
+            raw_ins = client.get("/analysis/shareholder-insider", {"code": kode, "from": (tgl_akhir - dt.timedelta(days=365)).isoformat(),
+                                                                   "to": tgl_akhir.isoformat(), "page": 1, "limit": 30})
+            out["insider"] = insider(raw_ins, today=tgl_akhir)
+            out["insider_raw"] = raw_ins.get("data", []) if isinstance(raw_ins, dict) else (raw_ins or [])
+        except Exception as e:
+            out["insider"] = _na(f"{type(e).__name__}: {str(e)[:100]}")
         coba("ksei", lambda: ksei(client.get(f"/analysis/shareholder/ksei/{kode}", {"range": 6})))
         coba("peringkat", lambda: peringkat({n: client.get(f"/analysis/top/{p}", {"date": tgl_akhir.isoformat()})
                                              for n, p in (("BDM/bandarmologi", "accumulation"), ("asing", "foreign"), ("ritel", "ritel"))}, kode))

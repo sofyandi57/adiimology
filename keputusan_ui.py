@@ -43,9 +43,24 @@ def konflik(rk, nilai, hk_, f, r) -> list[str]:
     return k
 
 
+def situasi_sesi():
+    """Situasi khusus (backdoor / perubahan pengendali) dari data sesi: konteks (insider 365 hari), kalender aksi, harga, catatan manual."""
+    import situasi_khusus as sx_
+    res = st.session_state.get("res")
+    if not res or res[0] != "ok":
+        return None
+    r = res[1]
+    rk, f = _ok("tek"), _ok("fund")
+    try:
+        return sx_.deteksi(st.session_state.get("konteks"), (f or {}).get("aksi"), rk["ind"] if rk else r.chart, st.session_state.get("catatan_khusus") or [],
+                           r.harga, r.params.modal, float(st.session_state.get("maks_spek_pct", 0.02)), r.params.fee_beli)
+    except Exception:
+        return None
+
+
 def ctx_sesi(mode: str) -> dict:
     return dict(mode=mode, konteks=st.session_state.get("konteks"), ledger=st.session_state.get("ledger_sinyal"), flow=st.session_state.get("flow"),
-                validasi=st.session_state.get("_validasi_status"))
+                validasi=st.session_state.get("_validasi_status"), situasi=situasi_sesi())
 
 
 def hitung(r, mode: str):
@@ -72,6 +87,18 @@ def tampil(r, mode: str) -> None:
                "Heuristik internal yang BELUM terbukti. Hard gate di bawah dapat membatasi vonis walau Total tinggi.")
     for g in sc["gates"]:
         (st.error if g["berat"] == "AVOID" else st.warning)(f"**{g['gate']}** ({'membatasi ke HINDARI' if g['berat'] == 'AVOID' else 'membatasi ke TUNGGU'}): {g['alasan']}", icon="⛔" if g["berat"] == "AVOID" else "🚧")
+    sx = sc.get("situasi")
+    if sx and sx.get("aktif"):
+        ps = sx["posisi"]
+        st.warning(f"### ⚠️ SITUASI KHUSUS: {sx['jenis']} — SPEKULATIF\nTahap: {sx['tahap_teks']}.  \n"
+                   f"**Posisi maksimal {ps['maks_pct']:.1%} modal ≈ {ps['lot']:,} lot (Rp{ps['nilai']:,.0f}).** {ps['aturan'].capitalize()}.  \n"
+                   + ("Tanggal kunci: " + "; ".join(sx["tanggal_kunci"]) if sx["tanggal_kunci"] else "Tanggal kunci: belum ada (tambahkan catatan manual bila tahu tenggatnya)."), icon="🎲")
+        with st.expander("Rincian situasi khusus (bukti, bendera, kondisi batal)"):
+            st.markdown("\n".join(f"- {x}" for x in sx["bukti"]) or "-")
+            for x_ in sx["flags"]:
+                st.error(x_, icon="🚩")
+            st.markdown("**Batal / keluar bila:** " + ("; ".join(sx["invalidasi"]) or "-"))
+            st.caption(sx["catatan_data"] + " Skor TA/FA/BA kurang relevan untuk saham event-driven: harga digerakkan nasib transaksi.")
     box = {"BELI": st.success, "TUNGGU": st.warning}.get(kep, st.error)
     sub = sc["ringkas"] + " · " + "; ".join(sc["ket"])
     box(f"### {r.params.kode} → {kep}\n{sub}", icon={"BELI": "🟢", "TUNGGU": "🟡"}.get(kep, "🔴"))

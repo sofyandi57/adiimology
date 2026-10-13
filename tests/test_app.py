@@ -266,3 +266,18 @@ def test_rapor_keputusan_tercatat_dan_evaluasi(monkeypatch, tmp_path):
     [b for b in at.button if b.label == "Evaluasi sekarang"][0].click().run()
     assert not at.exception, [e.value for e in at.exception]
     assert at.session_state["rapor"][0]["status"] in ("BELUM_ADA_DATA", "TANPA_ZONA")
+
+
+def test_catatan_manual_mengaktifkan_situasi_khusus(monkeypatch, tmp_path):
+    monkeypatch.setenv("HISTORI_DB_URL", f"sqlite:///{tmp_path / 'h3.db'}")
+    _fake_api(monkeypatch)
+    at = open_app(monkeypatch)
+    [b for b in at.button if b.label == "Hitung lengkap"][0].click().run()
+    assert not at.exception, [e.value for e in at.exception]
+    assert not any("SITUASI KHUSUS" in w.value for w in at.warning)
+    [s for s in at.selectbox if s.label == "Jenis"][0].set_value("Term sheet / MoU akuisisi")
+    [t for t in at.text_area if t.label == "Isi catatan"][0].set_value("Term sheet penjualan saham pengendali, diperpanjang")
+    [b for b in at.button if b.label == "Simpan catatan"][0].click().run()
+    assert not at.exception, [e.value for e in at.exception]
+    at.run()
+    assert any("SITUASI KHUSUS" in w.value and "Posisi maksimal" in w.value for w in at.warning)
