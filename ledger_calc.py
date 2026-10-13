@@ -7,12 +7,13 @@ atau harga pokok sebenarnya. Net positif saja tidak pernah cukup untuk label ACC
 from __future__ import annotations
 
 import datetime as dt
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 import pandas as pd
 
 import ledger as lg
+import ledger_kualitas as lq
 
 LOT = lg.SHARES_PER_LOT
 ACC, DIST, MIXED, NEUTRAL, INSUF = "ACCUMULATION", "DISTRIBUTION", "MIXED", "NEUTRAL", "INSUFFICIENT_DATA"
@@ -35,12 +36,16 @@ class Cfg:
     reaksi_hari: int = 5
     breakout_naik: float = 0.03
     opening_inventory: float | None = None      # lot; hanya bila pengguna menyatakannya
+    kualitas: lq.CfgQ = field(default_factory=lq.CfgQ)   # ambang anomali/status harian-rolling (relatif volume pasar)
 
 
 # --------------------------------------------------------------- ledger harian
 def bangun(b: pd.DataFrame, m: pd.DataFrame, cfg: Cfg | None = None) -> pd.DataFrame:
-    """Ledger harian per broker (satuan lot, Rupiah) + net kumulatif per broker pada jendela data yang tersedia."""
+    """Ledger harian per broker (satuan lot, Rupiah) + cumulative_net_flow_proxy per broker pada jendela data yang tersedia.
+    Broker tanpa baris sumber pada suatu sesi -> lot/nilai NULL dan data_completeness=NOT_AVAILABLE (BUKAN 0).
+    close_price/volume_lots/high/low di sini hanya join internal; ekspor memakai market_daily terpisah (tidak diulang per broker)."""
     cfg = cfg or Cfg()
+    m, _ = lg.pisah_sumber(m)
     if b.empty or m.empty:
         return pd.DataFrame()
     bx = lg.tandai_crossing(b, m)
@@ -49,14 +54,15 @@ def bangun(b: pd.DataFrame, m: pd.DataFrame, cfg: Cfg | None = None) -> pd.DataF
     if mm.empty:
         return pd.DataFrame()
     tgl = mm["trade_date"].tolist()
-    base = pd.DataFrame({"trade_date": tgl, "close_price": mm["close"].to_numpy(), "volume_lots": mm["volume_shares"].to_numpy() / LOT})
+    base = pd.DataFrame({"trade_date": tgl, "close_price": mm["close"].to_numpy(), "volume_lots": mm["volume_shares"].to_numpy() / LOT,
+                         "high_price": mm["high"].to_numpy() if "high" in mm else np.nan, "low_price": mm["low"].to_numpy() if "low" in mm else np.nan})
     kode = bx["ticker"].iloc[0]
     rows = []
     for br, g in bx.groupby("broker_code"):
         g = g.set_index("trade_date")
         d = base.copy()
         for c in ("buy_shares", "sell_shares", "buy_value", "sell_value"):
-            d[c] = d["trade_date"].map(g[c]).fillna(0.0)
+            d[c] = d["trade_date"].map(g[c])                               # NaN = tidak diketahui / tidak ada baris sumber
         d["crossing"] = d["trade_date"].map(g["crossing"]).fillna(False).astype(bool)
         d["buy_avg_raw"] = d["trade_date"].map(g["buy_avg_raw"])
         d["sell_avg_raw"] = d["trade_date"].map(g["sell_avg_raw"])
@@ -64,18 +70,37 @@ def bangun(b: pd.DataFrame, m: pd.DataFrame, cfg: Cfg | None = None) -> pd.DataF
         d["broker_code"] = br
         d["ticker"] = kode
         d["is_final"] = d["trade_date"].map(g["is_final"]).fillna(True).astype(bool)
-        d["missing_data_flag"] = ~d["trade_date"].isin(g.index)          # True = broker tidak punya baris sumber di sesi itu (tidak aktif; BUKAN tanggal hilang)
-        d["source_timestamp"] = d["trade_date"].map(g["retrieved_at"]) if "retrieved_at" in g else pd.NaT
+        d["missing_data_flag"] = ~d["trade_date"].isin(g.index)          # True = broker tidak punya baris sumber di sesi itu (NULL; BUKAN tanggal hilang)
+        src = g["data_source"] if "data_source" in g else pd.Series(lg.SUMBER, index=g.index)
+        d["market_segment"] = d["trade_date"].map(src.map(lg.segmen)).fillna("UNKNOWN")
+        d["source_id"] = [lg.source_id_broker(kode, t, src.get(t, lg.SUMBER)) if t in g.index else None for t in d["trade_date"]]
+        d["ingested_at"] = d["trade_date"].map(g["retrieved_at"]) if "retrieved_at" in g else pd.NaT
         rows.append(d)
     L = pd.concat(rows, ignore_index=True)
+    L["source_timestamp"] = L["ingested_at"]
     L["buy_lots"], L["sell_lots"] = L["buy_shares"] / LOT, L["sell_shares"] / LOT
-    L["net_lots"] = L["buy_lots"] - L["sell_lots"]
+    L["net_lots"] = L["buy_lots"] - L["sell_lots"]                         # NULL bila salah satu sisi NULL
     L["net_value"] = L["buy_value"] - L["sell_value"]
-    L["avg_buy_price"] = np.where(L["buy_shares"] > 0, L["buy_value"] / L["buy_shares"].replace(0, np.nan), np.nan)
-    L["avg_sell_price"] = np.where(L["sell_shares"] > 0, L["sell_value"] / L["sell_shares"].replace(0, np.nan), np.nan)
+    L["avg_buy_price"] = np.where(L["buy_shares"] > 0, L["buy_value"] / L["buy_shares"].where(L["buy_shares"] > 0), np.nan)
+    L["avg_sell_price"] = np.where(L["sell_shares"] > 0, L["sell_value"] / L["sell_shares"].where(L["sell_shares"] > 0), np.nan)
+    L["data_completeness"] = np.where(L["missing_data_flag"], lq.NA, np.where(L["buy_lots"].isna() | L["sell_lots"].isna(), "PARTIAL", "COMPLETE"))
+    L["row_flags"] = _flag_baris(L, cfg.kualitas)
     L = L.sort_values(["broker_code", "trade_date"]).reset_index(drop=True)
-    L["cumulative_net_lots"] = L.groupby("broker_code")["net_lots"].cumsum()
+    L["cumulative_net_flow_proxy"] = L["net_lots"].fillna(0.0).groupby(L["broker_code"]).cumsum()   # proksi aliran, BUKAN posisi
     return L
+
+
+def _flag_baris(L: pd.DataFrame, q: lq.CfgQ) -> pd.Series:
+    """Flag kualitas tingkat baris yang hanya memakai data HARI ITU (aman untuk tanggal historis)."""
+    f = []
+    lo, hi = L["low_price"] * (1 - q.harga_tol), L["high_price"] * (1 + q.harga_tol)
+    for nama, cond in (("SIDE_NULL", (L["data_completeness"] == "PARTIAL")),
+                       ("CROSSING_SUSPECTED", L["crossing"]),
+                       ("AVG_BUY_OUT_OF_RANGE", (L["avg_buy_price"] < lo) | (L["avg_buy_price"] > hi)),
+                       ("AVG_SELL_OUT_OF_RANGE", (L["avg_sell_price"] < lo) | (L["avg_sell_price"] > hi)),
+                       ("NET_EXTREME_VS_VOLUME", (L["net_lots"].abs() / L["volume_lots"].where(L["volume_lots"] > 0)) >= q.ekstrem_net_pct)):
+        f.append(np.where(cond.fillna(False).astype(bool), nama, ""))
+    return pd.Series([";".join(x for x in t if x) for t in zip(*f)], index=L.index)
 
 
 # ------------------------------------------------------------------ per broker
@@ -112,6 +137,9 @@ def _skenario_posisi(net: np.ndarray, opening: float | None) -> dict:
 def analisa_broker(g: pd.DataFrame, cfg: Cfg, vol_total_lots: float, validasi_gagal: bool = False) -> dict:
     """g = baris ledger satu broker (urut tanggal, seluruh hari bursa)."""
     g = g.sort_values("trade_date").reset_index(drop=True)
+    for c in ("buy_lots", "sell_lots", "net_lots", "buy_shares", "sell_shares", "buy_value", "sell_value", "net_value"):
+        if c in g:                    # agregasi: sesi tanpa baris sumber (NULL) tidak menyumbang transaksi teramati; nilai NULL tetap NULL di ledger
+            g[c] = g[c].fillna(0.0)
     tgl, close = g["trade_date"].tolist(), g["close_price"].to_numpy()
     net, buy, sell = g["net_lots"].to_numpy(), g["buy_lots"].to_numpy(), g["sell_lots"].to_numpy()
     aktif = ((g["buy_shares"] > 0) | (g["sell_shares"] > 0)).to_numpy()
@@ -317,46 +345,96 @@ def alert(L: pd.DataFrame, hasil: dict, zona: dict, val: dict, cfg: Cfg, now: dt
 # --------------------------------------------------------------------- orkestrasi
 def jalankan(b: pd.DataFrame, m: pd.DataFrame, cfg: Cfg | None = None, log: pd.DataFrame | None = None, now: dt.datetime | None = None) -> dict:
     cfg = cfg or Cfg()
+    m, m_lain = lg.pisah_sumber(m)                      # sumber harga kedua hanya untuk verifikasi silang (source_conflict)
     val = lg.validasi(b, m, log, now)
     L = bangun(b, m, cfg)
     if L.empty:
         return dict(ok=False, validasi=val, alasan="ledger kosong", cfg=cfg)
+    _gabung_cek(val, lq.cek_ledger(L))
+    q = cfg.kualitas
     vol_total = float(L.drop_duplicates("trade_date")["volume_lots"].sum())
     hasil = {k: analisa_broker(g, cfg, vol_total, val["status"] == "GAGAL") for k, g in L.groupby("broker_code")}
     zona = zona_distribusi(L, hasil, cfg)
     pr = peringkat(hasil)
     al = alert(L, hasil, zona, val, cfg, now)
-    # kolom status & posisi estimasi pada ledger (nilai akhir broker; bukan status harian)
-    L["flow_status_akhir"] = L["broker_code"].map({k: v["status"] for k, v in hasil.items()})
-    L["confidence_akhir"] = L["broker_code"].map({k: v["confidence"] for k, v in hasil.items()})
-    L["estimated_position_lots_low"] = L["broker_code"].map({k: v["posisi"]["rendah"] for k, v in hasil.items()})
-    L["estimated_avg_cost_proxy"] = L["broker_code"].map({k: (v["episode"]["avg_buy_ex_crossing"] if v.get("episode") else np.nan) for k, v in hasil.items()})
+    # status per tanggal: HANYA data s.d. tanggal itu (tidak ada status akhir periode yang disalin ke tanggal historis)
+    F = lq.fitur_rolling(L, sorted(set(m["trade_date"])), tuple(sorted(set(lq.JENDELA_FITUR) | {q.rolling_hari})))
+    SH, SR = lq.status_harian(L, q), lq.status_rolling(L, F, q)
+    L = L.merge(SH[["trade_date", "broker_code", "status"]].rename(columns={"status": "daily_flow_status"}), on=["trade_date", "broker_code"], how="left")
+    L = L.merge(SR[["trade_date", "broker_code", "status"]].rename(columns={"status": "rolling_flow_status"}), on=["trade_date", "broker_code"], how="left")
+    L["rolling_lookback_days"] = q.rolling_hari
+    anom = lq.anomali(L, q)
+    cross = lq.kontribusi_crossing(L)
+    ekstrem = lq.dampak_ekstrem(L, q)
+    verif = lg.periksa_sumber(m, m_lain)
+    pe = lq.period_end_summary(L, hasil, anom, ekstrem, cross, cfg.opening_inventory)
     return dict(ok=True, ledger=L, hasil=hasil, zona=zona, peringkat=pr, alert=al, validasi=val, cfg=cfg, vol_total_lots=vol_total,
-                tgl_awal=L["trade_date"].min(), tgl_akhir=L["trade_date"].max())
+                tgl_awal=L["trade_date"].min(), tgl_akhir=L["trade_date"].max(), fitur=F, status_detail=pd.concat([SH, SR], ignore_index=True),
+                anomali=anom, crossing=cross, ekstrem=ekstrem, sumber=verif, period_end=pe, pasar=lq.market_daily(L, m, verif),
+                konsentrasi=lq.konsentrasi({n: F[n] for n in lq.JENDELA_FITUR if n in F}))
+
+
+def _gabung_cek(val: dict, cek: list[dict]) -> None:
+    val["cek"] += cek
+    g = [c for c in val["cek"] if c["status"] == "GAGAL"]
+    p = [c for c in val["cek"] if c["status"] == "PERINGATAN"]
+    val.update(status="GAGAL" if g else "PERINGATAN" if p else "OK", n_gagal=len(g), n_peringatan=len(p))
 
 
 def tabel_posisi(res: dict) -> pd.DataFrame:
+    pe = res["period_end"].set_index("broker_code") if res.get("period_end") is not None and not res["period_end"].empty else None
     rows = []
     for k, v in res["hasil"].items():
         ep, ps = v.get("episode"), v["posisi"]
+        e = pe.loc[k] if pe is not None and k in pe.index else {}
         rows.append({"Broker": k, "Nama": v["nama"], "Start Date (episode)": ep["mulai"] if ep else None, "Gross Buy Lots": v["gross_buy_lots"],
-                     "Gross Sell Lots": v["gross_sell_lots"], "Net Flow Lots": v["net_flow_lots"], "Avg Buy (gross)": v["avg_buy_gross"],
+                     "Gross Sell Lots": v["gross_sell_lots"], "Cumulative net flow proxy": v["net_flow_lots"], "Avg Buy (gross)": v["avg_buy_gross"],
                      "Avg Buy (ex-crossing)": v["avg_buy_ex_crossing"], "Net-flow cost proxy": v["net_flow_cost_proxy"],
+                     "Status estimasi modal": e.get("avg_cost_status", lq.NA), "Alasan modal": e.get("avg_cost_reason", ""),
+                     "Status posisi": e.get("estimated_position_status", lq.NA), "Alasan posisi": e.get("estimated_position_reason", ""),
                      "Est. Remaining Low": ps["rendah"], "Est. Remaining High": ps["tinggi"], "Est. Remaining Base": ps["dasar"],
-                     "Crossing % gross buy": v["crossing_pct_gross_buy"], "Status": v["status"], "Confidence": v["confidence"], "Label": ps["label"]})
-    return pd.DataFrame(rows).sort_values("Net Flow Lots", ascending=False).reset_index(drop=True)
+                     "Crossing % gross buy": v["crossing_pct_gross_buy"], "Anomali": e.get("anomaly_flags", ""),
+                     "Status (kandidat)": lq.label_kandidat(v["status"]), "Confidence": e.get("confidence", v["confidence"]), "Label": ps["label"]})
+    return pd.DataFrame(rows).sort_values("Cumulative net flow proxy", ascending=False).reset_index(drop=True)
 
 
 def csv_ledger(res: dict) -> bytes:
-    cols = ["trade_date", "ticker", "broker_code", "broker_name", "buy_lots", "sell_lots", "net_lots", "buy_value", "sell_value", "net_value", "avg_buy_price",
-            "avg_sell_price", "close_price", "volume_lots", "crossing", "cumulative_net_lots", "estimated_position_lots_low", "estimated_avg_cost_proxy",
-            "flow_status_akhir", "confidence_akhir", "is_final"]
-    out = res["ledger"][cols + ["missing_data_flag", "source_timestamp"]].copy()
-    out["data_status"] = np.where(out.pop("is_final"), "FINAL", "PARTIAL")
-    out["duplicate_flag"] = False                                        # kunci unik di database: duplikat tidak mungkin tersimpan
-    out["source_version"] = lg.SOURCE_VERSION
-    out["calculation_version"] = __import__("ledger_score").CALC_VERSION
-    return out.to_csv(index=False).encode("utf-8")
+    """broker_flow_daily seluruh broker (tanpa volume/harga pasar; join ke market_daily per trade_date)."""
+    return lq.broker_flow_daily(res["ledger"]).to_csv(index=False).encode("utf-8")
+
+
+def _relevan(res: dict) -> set:
+    """Broker relevan untuk ekspor AI: 5 net buyer + 5 net seller akhir periode + broker berstatus/beranomali (seleksi saja; nilai per tanggal tidak berubah)."""
+    H = res["hasil"]
+    urut = sorted(H, key=lambda k: H[k]["net_flow_lots"])
+    return set(urut[:5]) | set(urut[-5:]) | {k for k, v in H.items() if v["status"] in (ACC, DIST, MIXED) or v.get("episode")} | set(res.get("anomali") or {})
+
+
+def csv_market(res: dict | None) -> bytes:
+    if not res or not res.get("ok"):
+        return b"info\nledger kosong: perbarui di tab Ledger Broker\n"
+    return res["pasar"].to_csv(index=False).encode("utf-8")
+
+
+def csv_period_end(res: dict | None) -> bytes:
+    if not res or not res.get("ok"):
+        return b"info\nledger kosong: perbarui di tab Ledger Broker\n"
+    return res["period_end"].to_csv(index=False).encode("utf-8")
+
+
+def csv_fitur(res: dict | None, n_asof: int = 5, broker: set | None = None) -> bytes:
+    """broker_flow_features (bentuk panjang) untuk n_asof sesi terakhir dan broker relevan."""
+    if not res or not res.get("ok"):
+        return b"info\nledger kosong: perbarui di tab Ledger Broker\n"
+    tgl = sorted(res["ledger"]["trade_date"].unique())[-n_asof:]
+    F = {n: f for n, f in res["fitur"].items() if n in lq.JENDELA_FITUR}
+    return lq.fitur_long(F, sorted(broker or _relevan(res)), tgl).to_csv(index=False).encode("utf-8")
+
+
+def ekspor_ai(res: dict | None) -> dict[str, bytes]:
+    """Paket CSV untuk AI: tabel terpisah (tidak ada volume pasar yang diulang per broker). Kunci = akhiran nama file."""
+    return {"broker_flow_daily.csv": csv_ai(res), "market_daily.csv": csv_market(res), "period_end_summary.csv": csv_period_end(res),
+            "broker_flow_features.csv": csv_fitur(res, n_asof=1)}
 
 
 # ----------------------------------------------------------------------- jawaban
@@ -380,7 +458,7 @@ def jawaban(res: dict, kode: str) -> dict:
         k, v = kuat
         ep = v["episode"]
         qs.append(("Broker mana yang menunjukkan akumulasi paling konsisten?",
-                   f"[OBS] {k} ({v['nama']}): {ep['frac_net_beli']:.0%} sesi aktif dalam episode net beli, net {_fmt_lot(v['net_flow_lots'])} lot, status {v['status']} (confidence {v['confidence']}). "
+                   f"[OBS] {k} ({v['nama']}): {ep['frac_net_beli']:.0%} sesi aktif dalam episode net beli, cumulative_net_flow_proxy {_fmt_lot(v['net_flow_lots'])} lot, status {lq.label_kandidat(v['status'])} (confidence {v['confidence']}). "
                    f"[INF] Ini broker/perantara, bukan identitas pemilik akhir."))
         qs.append(("Sejak kapan episode akumulasi diperkirakan dimulai?",
                    f"[EST] {ep['mulai']} (lembah net kumulatif terakhir sebelum puncak {ep['puncak']}); {ep['hari']} sesi bursa; "
@@ -396,9 +474,9 @@ def jawaban(res: dict, kode: str) -> dict:
         qs.append(("Apakah posisi tersisa dapat diestimasi, atau hanya net-flow proxy?",
                    f"[EST] HANYA NET_FLOW_PROXY: persediaan awal tidak diketahui. Skenario rendah {_fmt_lot(ps['rendah'])} lot (persediaan awal 0), tinggi {_fmt_lot(ps['tinggi'])} lot "
                    f"(persediaan awal minimal agar posisi tak negatif), dasar {_fmt_lot(ps['dasar'])}. Jangan dibaca sebagai kepemilikan aktual."))
-        st = {ACC: "masih mengakumulasi", DIST: "mulai/ sedang distribusi", MIXED: "pola campuran"}[v["status"]]
+        st = {ACC: "kandidat akumulasi (proksi aliran)", DIST: "kandidat distribusi (proksi aliran)", MIXED: "pola campuran"}[v["status"]]
         qs.append(("Apakah broker masih mengakumulasi, mulai distribusi, atau menunjukkan pola campuran?",
-                   f"[INF] {k}: {st} ({v['status']}). Sinyal akumulasi terpenuhi: {sum(v['sinyal_acc'].values())}/6; sinyal distribusi: {sum(v['sinyal_dist'].values())}/6."))
+                   f"[INF] {k}: {st} ({lq.label_kandidat(v['status'])}). Sinyal akumulasi terpenuhi: {sum(v['sinyal_acc'].values())}/6; sinyal distribusi: {sum(v['sinyal_dist'].values())}/6."))
         sup = [s for s, ok in v["sinyal_acc"].items() if ok] + []
         bantah = [s for s, ok in v["sinyal_acc"].items() if not ok] + [s for s, ok in v["sinyal_dist"].items() if ok]
         qs.append(("Apa bukti yang mendukung dan membantah hipotesis akumulasi?",
@@ -426,83 +504,157 @@ def jawaban(res: dict, kode: str) -> dict:
     if kuat:
         k, v = kuat
         ep = v["episode"]
-        rg = [("Observed accumulation", f"{k}: net {_fmt_lot(v['net_flow_lots'])} lot sejak {ep['mulai']}; {sum(v['sinyal_acc'].values())}/6 sinyal terpenuhi"),
+        rg = [("Observed accumulation", f"{k}: cumulative_net_flow_proxy {_fmt_lot(v['net_flow_lots'])} lot sejak {ep['mulai']}; {sum(v['sinyal_acc'].values())}/6 sinyal terpenuhi"),
               ("Estimated cost basis", f"{ep.get('avg_buy_ex_crossing', float('nan')):,.1f} (rata-rata beli ex-crossing dalam episode; proksi, bukan harga pokok)"),
               ("Estimated remaining position", f"N/A sebagai posisi aktual; NET_FLOW_PROXY {_fmt_lot(v['posisi']['rendah'])}-{_fmt_lot(v['posisi']['tinggi'])} lot")]
     else:
-        rg = [("Observed accumulation", "tidak ada broker yang memenuhi syarat ACCUMULATION"), ("Estimated cost basis", "N/A"), ("Estimated remaining position", "N/A")]
+        rg = [("Observed accumulation", "tidak ada broker yang memenuhi syarat ACCUMULATION_CANDIDATE"), ("Estimated cost basis", "N/A"), ("Estimated remaining position", "N/A")]
     rg.append(("Distribution watch zones", "; ".join(zr) if zr else "N/A (belum ada penjualan teramati)"))
-    stat_all = "INSUFFICIENT_DATA" if val["status"] == "GAGAL" else (kuat[1]["status"] if kuat else NEUTRAL)
+    stat_all = "INSUFFICIENT_DATA" if val["status"] == "GAGAL" else (lq.label_kandidat(kuat[1]["status"]) if kuat else NEUTRAL)
     conf = kuat[1]["confidence"] if kuat else "Low"
     rg.append(("Current status", stat_all))
     rg.append(("Confidence", f"{conf} (hari data {val['cakupan']['hari'] if val.get('cakupan') else 0}; validasi {val['status']})"))
-    impl = "avoid" if stat_all in (DIST,) else ("wait for confirmation" if stat_all in (MIXED, NEUTRAL, INSUF) or conf != "High" else "monitor")
+    impl = "avoid" if stat_all == lq.DIST_C else ("wait for confirmation" if stat_all in (lq.NEUTRAL, lq.INSUF) or conf != "High" else "monitor")
     rg.append(("Trading implication", f"{impl}. Invalidasi: " + "; ".join(ubah[:2]) + "."))
     return dict(jawab=qs, ringkasan=rg)
 
 
 # ------------------------------------------------------------- ekspor untuk AI
+def _pct(x):
+    return "N/A" if x is None or pd.isna(x) else f"{x:+.1%}"
+
+
 def baris_ai(res: dict | None, kode: str) -> list[str]:
-    """Bagian 'LEDGER BROKER' ringkas untuk TXT/MD. Tabel memakai '|' agar otomatis menjadi tabel di Markdown."""
+    """Bagian 'LEDGER BROKER' untuk TXT/MD dengan format OBSERVASI / INFERENSI / BUKTI YANG MELAWAN / KUALITAS DATA / KESIMPULAN / INVALIDASI / DATA TAMBAHAN.
+    Tabel memakai '|' agar otomatis menjadi tabel di Markdown. Tidak ada klaim posisi aktual atau identitas bandar."""
     L = ["## LEDGER BROKER (data tersimpan di database; tanpa panggilan API saat ekspor)"]
     if not res or not res.get("ok"):
         L.append("N/A: belum ada data ledger tersimpan untuk saham ini (buka tab Ledger Broker lalu Perbarui/backfill). Akumulasi/distribusi broker harian TIDAK dapat dinilai.")
         return L
     val, H, Z = res["validasi"], res["hasil"], res["zona"]
-    L.append(f"[OBS] jendela {res['tgl_awal']}..{res['tgl_akhir']}; {val['cakupan']['hari']} hari; {val['cakupan']['n_broker']} broker; validasi {val['status']}"
-             + (f" (masalah: {', '.join(c['id'] for c in val['cek'] if c['status'] != 'OK')})" if val["status"] != "OK" else ""))
-    L.append("PERINGATAN METODE: broker=perantara banyak nasabah; biaya & posisi = NET_FLOW_PROXY (bukan posisi/harga pokok aktual); bukan identitas 'bandar'; net positif saja tidak cukup untuk ACCUMULATION.")
+    pe, Mk, cross, ver = res["period_end"], res["pasar"], res["crossing"], res["sumber"]
+    q = res["cfg"].kualitas
+    L.append("PERINGATAN METODE: broker=perantara banyak nasabah; net kumulatif = cumulative_net_flow_proxy (NET_FLOW_PROXY), bukan posisi/harga pokok aktual; "
+             "bukan identitas 'bandar'; status = kandidat (ACCUMULATION_CANDIDATE/DISTRIBUTION_CANDIDATE/NEUTRAL/INSUFFICIENT_DATA), bukan fakta niat pelaku.")
+    top = pe.reindex(pe["cumulative_net_flow_proxy"].abs().sort_values(ascending=False).index).head(8)
+    tgl = res["tgl_akhir"]
+    # ------------------------------------------------------------------ OBSERVASI
+    L.append("### OBSERVASI")
+    L.append(f"[OBS] jendela {res['tgl_awal']}..{tgl}; {val['cakupan']['hari']} sesi; {val['cakupan']['n_broker']} broker; satuan {lg.UNIT_VOLUME}, harga {lg.UNIT_HARGA}; "
+             f"sumber {lg.SOURCE_VERSION} (pasar REGULAR) + {', '.join(ver['sumber'])} (harga/volume); formula {lq.FORMULA_VERSION}")
+    vol20 = Mk["market_volume_lots"].tail(20)
+    L.append(f"[OBS] volume pasar dicatat SEKALI per tanggal (market_daily): rata-rata 20 sesi {vol20.mean():,.0f} lot; total broker reguler / volume pasar median "
+             f"{Mk['broker_to_market_volume_ratio'].median():.2f}x. Net {val['cakupan']['n_broker']} broker terlihat BUKAN net flow seluruh pasar.")
+    L.append("Broker | Net lot periode | Net ex-crossing | Net crossing | Net tanpa hari terbesar | Gross beli | Gross jual")
+    for r in top.itertuples():
+        L.append(f"{r.broker_code} | {r.cumulative_net_flow_proxy:,.0f} | {r.net_lots_non_crossing:,.0f} | {r.net_lots_crossing_flagged:,.0f} | {r.net_lots_ex_top_day:,.0f} | "
+                 f"{r.gross_buy_lots:,.0f} | {r.gross_sell_lots:,.0f}")
+    F20 = res["fitur"].get(20)
+    if F20 is not None and tgl in F20["net_lots"].index:
+        L.append(f"Fitur rolling per {tgl} (hanya data s.d. tanggal itu; persen terhadap volume pasar jendela yang sama):")
+        L.append("Broker | Net 1D | Net 3D | Net 5D | Net 10D | Net 20D | Net/volume 20D | Hari net beli 20D | Run beli terpanjang 20D | Ganti arah 20D | Mutu")
+        for b in top["broker_code"]:
+            nl = [res["fitur"][n]["net_lots"].loc[tgl].get(b, np.nan) for n in lq.JENDELA_FITUR]
+            L.append(f"{b} | " + " | ".join(_fmt_lot(x) for x in nl) + f" | {_pct(F20['net_flow_pct_market_volume'].loc[tgl].get(b))} | "
+                     f"{('N/A' if pd.isna(F20['positive_flow_days_pct'].loc[tgl].get(b)) else format(F20['positive_flow_days_pct'].loc[tgl].get(b), '.0%'))} | "
+                     f"{_fmt_lot(F20['longest_positive_run'].loc[tgl].get(b))} | {_fmt_lot(F20['direction_changes'].loc[tgl].get(b))} | {F20['quality_flag'].loc[tgl].get(b)}")
+    K = res.get("konsentrasi")
+    if K is not None and not K.empty:
+        k20 = K[(K["as_of_date"] == tgl) & (K["lookback_days"] == 20)]
+        if not k20.empty and k20.iloc[0]["denominator_net_buy_lots"] <= 0:
+            L.append("[OBS] konsentrasi 20D: tidak ada broker dengan net beli 20D (denominator net beli = 0)")
+        elif not k20.empty:
+            r = k20.iloc[0]
+            L.append(f"[OBS] konsentrasi 20D: top-1 {r['top1_broker']} = {r['top1_share_net_buy']:.0%} dan top-3 = {r['top3_share_net_buy']:.0%} dari total net beli broker yang net beli "
+                     f"({r['denominator_net_buy_lots']:,.0f} lot); top-3 gross beli = {r['top3_share_gross_buy']:.0%} dari total gross beli ({r['denominator_gross_buy_lots']:,.0f} lot)")
+    tot = cross[cross["broker_code"] == "TOTAL"]
+    if not tot.empty:
+        t = tot.iloc[0]
+        L.append(f"[OBS] crossing (heuristik beli~jual besar, pasar reguler): {t['crossing_days']:.0f} broker-hari, {('N/A' if pd.isna(t['crossing_pct_gross_buy']) else format(t['crossing_pct_gross_buy'], '.0%'))} "
+                 f"dari gross beli; net crossing {t['net_lots_crossing_flagged']:+,.0f} lot vs net non-crossing {t['net_lots_non_crossing']:+,.0f} lot (dipisah, tidak digabung ke sinyal)")
+    zs = [z for z in (Z.get("zona") or {}).values() if z]
+    if zs:
+        L.append("Zona distribusi teramati (area penjualan teramati, bukan target harga broker):")
+        L.append("Zona | Harga | Tanggal | Broker | Gross jual lot | Reaksi | Conf")
+        for z in zs:
+            L.append(f"{z['nama'].split(' (')[0]} | {z['harga_rendah']:,.0f}-{z['harga_tinggi']:,.0f} | {z['n_tanggal']} tgl ({z['tanggal'][0]}..) | {','.join(z['broker'])} | "
+                     f"{z['gross_sell_lots']:,.0f} | {('N/A' if pd.isna(z['reaksi_rata']) else format(z['reaksi_rata'], '+.1%'))} | {z['confidence']}")
+    else:
+        L.append("Zona distribusi: N/A (belum ada penjualan teramati broker kunci).")
+    # ------------------------------------------------------------------ INFERENSI
+    L.append("### INFERENSI")
+    L.append("[INF] status akhir periode per broker (period_end_summary; TIDAK berlaku surut ke tanggal historis):")
+    L.append("Broker | Status akhir periode | Confidence | Mutu data | Bukti mendukung")
+    for r in top.itertuples():
+        L.append(f"{r.broker_code} | {r.status} | {r.confidence} | {r.data_quality} | {(r.evidence_for or '-')[:160]}")
+    Ld = res["ledger"]
+    akhir = Ld[Ld["trade_date"] == tgl].set_index("broker_code")
+    L.append(f"[INF] rolling_flow_status {q.rolling_hari}D per {tgl}: " + "; ".join(f"{b}={akhir['rolling_flow_status'].get(b, 'N/A')}" for b in top["broker_code"]))
     sg = res.get("sinyal")
     if sg is not None:
         import ledger_score as ls_
         L += ls_.baris(sg)
-    j = jawaban(res, kode)
-    for k, v in j["ringkasan"]:
-        L.append(f"{k}: {v}")
-    L.append("### Peringkat broker (lot; ex-crossing)")
-    L.append("Broker | Net lot | Gross beli | Gross jual | Status | Conf")
-    for k, v in sorted(H.items(), key=lambda kv: -abs(kv[1]["net_flow_lots"]))[:8]:
-        L.append(f"{k} | {v['net_flow_lots']:,.0f} | {v['gross_buy_ex_crossing']:,.0f} | {v['gross_sell_ex_crossing']:,.0f} | {v['status']} | {v['confidence']}")
-    L.append("### Estimasi posisi (NET_FLOW_PROXY)")
-    L.append("Broker | Mulai episode | Avg beli gross | Avg beli ex-cross | Proksi net-flow | Sisa rendah | Sisa tinggi | Crossing")
-    for k, v in sorted(H.items(), key=lambda kv: -abs(kv[1]["net_flow_lots"]))[:8]:
-        ep, ps = v.get("episode"), v["posisi"]
-        L.append(f"{k} | {ep['mulai'] if ep else 'N/A'} | {_fmt_px(v['avg_buy_gross'])} | {_fmt_px(v['avg_buy_ex_crossing'])} | {_fmt_px(v['net_flow_cost_proxy'])} | "
-                 f"{_fmt_lot(ps['rendah'])} | {_fmt_lot(ps['tinggi'])} | {v['crossing_pct_gross_buy']:.0%}")
-    zs = [z for z in (Z.get("zona") or {}).values() if z]
-    if zs:
-        L.append("### Zona distribusi teramati (bukan target broker)")
-        L.append("Zona | Harga | Tanggal | Broker | Gross jual lot | Reaksi | Conf | Invalidasi")
-        for z in zs:
-            L.append(f"{z['nama'].split(' (')[0]} | {z['harga_rendah']:,.0f}-{z['harga_tinggi']:,.0f} | {z['n_tanggal']} tgl ({z['tanggal'][0]}..) | {','.join(z['broker'])} | "
-                     f"{z['gross_sell_lots']:,.0f} | {('N/A' if pd.isna(z['reaksi_rata']) else format(z['reaksi_rata'], '+.1%'))} | {z['confidence']} | {z['invalidasi']}")
+    # ------------------------------------------------------------------ BUKTI YANG MELAWAN
+    L.append("### BUKTI YANG MELAWAN")
+    for r in top.itertuples():
+        if r.status in (lq.ACC_C, lq.DIST_C):
+            L.append(f"- {r.broker_code} ({r.status}): {(r.evidence_against or '-')[:300]}")
+    for a in [a for a in res["alert"] if a["level"] != "INFO"][:6]:
+        L.append(f"- [{a['level']}] {a['tipe']}: {a['bukti']} (jendela {a['jendela']})")
+    if not any(r.status in (lq.ACC_C, lq.DIST_C) for r in top.itertuples()):
+        L.append("- tidak ada broker berstatus kandidat; net positif/negatif saja tidak cukup untuk hipotesis")
+    # ------------------------------------------------------------------ KUALITAS DATA
+    L.append("### KUALITAS DATA")
+    L.append(f"validasi {val['status']}" + (": " + "; ".join(f"{c['id']} ({c['status']}): {c['detail'][:140]}" for c in val["cek"] if c["status"] != "OK") if val["status"] != "OK" else ""))
+    an = res.get("anomali") or {}
+    if an:
+        L.append("Anomali broker (perlu pemeriksaan manual; estimasi modal broker ini = UNRELIABLE):")
+        for b, fl in list(an.items())[:10]:
+            L.append(f"- {b}: " + "; ".join(f"{a['flag']} ({a['detail']})" for a in fl))
     else:
-        L.append("Zona distribusi: N/A (belum ada penjualan teramati broker kunci).")
-    if res["alert"]:
-        L.append("### Peringatan aktif")
-        for a in res["alert"][:8]:
-            L.append(f"- [{a['level']}] {a['tipe']}: {a['bukti']} (jendela {a['jendela']}; conf {a['confidence']}; {a['ts']})")
-    L.append("### Tanya-jawab ledger")
-    for q, a in j["jawab"]:
-        L.append(f"- {q} {a}")
+        L.append("Anomali broker: tidak ada yang melewati ambang.")
+    L.append("Estimasi posisi: NOT_AVAILABLE untuk semua broker (persediaan awal/inventory tidak tersedia; hanya cumulative_net_flow_proxy)."
+             if res["cfg"].opening_inventory is None else "Estimasi posisi: memakai persediaan awal yang dinyatakan pengguna (tetap proksi).")
+    L.append("Estimasi modal: " + ", ".join(f"{r.broker_code}={r.avg_cost_status}" for r in top.itertuples()) + " (PROXY = rata-rata beli ex-crossing episode; bukan harga pokok)")
+    L.append(f"Verifikasi sumber harga: {ver['status']} ({ver['catatan']})")
+    nk = Mk["volume_unit_check"].value_counts().to_dict()
+    L.append(f"Satuan volume: market_volume_shares = market_volume_lots x 100; cek per tanggal {nk}. Segmen: " +
+             ", ".join(f"{k}={v}" for k, v in Ld["market_segment"].value_counts().items()) + "; data_completeness: " +
+             ", ".join(f"{k}={v}" for k, v in Ld["data_completeness"].value_counts().items()) + " (NOT_AVAILABLE = tidak ada baris sumber, bukan 0)")
+    # ------------------------------------------------------------------ KESIMPULAN
+    j = jawaban(res, kode)
+    rg = dict(j["ringkasan"])
+    L.append("### KESIMPULAN")
+    L.append(f"Status sementara: {rg.get('Current status')} · confidence {rg.get('Confidence')} · implikasi {rg.get('Trading implication', '').split('.')[0]}. "
+             "Ini hipotesis berbasis proksi, bukan kepastian; tidak ada klaim posisi aktual atau identitas pemilik dana.")
+    # ------------------------------------------------------------------ INVALIDASI
+    L.append("### INVALIDASI")
+    for r in top.itertuples():
+        if r.status in (lq.ACC_C, lq.DIST_C):
+            L.append(f"- {r.broker_code} ({r.status}): {r.invalidation_condition}")
+    for z in zs:
+        L.append(f"- {z['nama'].split(' (')[0]}: {z['invalidasi']}")
+    L.append("- umum: net kelompok 5 sesi berbalik arah; data baru memperlihatkan crossing/transfer menjelaskan lot terakumulasi")
+    # ------------------------------------------------------------------ DATA TAMBAHAN
+    L.append("### DATA TAMBAHAN")
+    tambah = ["inventory/kepemilikan aktual (KSEI) untuk memvalidasi cumulative_net_flow_proxy",
+              "rekonsiliasi broker beranomali (" + ", ".join(an) + ")" if an else "",
+              "sumber harga/volume kedua untuk verifikasi silang" if ver["status"] == "BELUM_DIVERIFIKASI" else "",
+              "data pasar negosiasi/tunai per broker (saat ini hanya pasar reguler)", "riwayat lebih panjang untuk episode sebelumnya"]
+    L += [f"- {t}" for t in tambah if t]
     return L
 
 
 def csv_ai(res: dict | None) -> bytes:
-    """CSV ringkas untuk AI: ledger harian hanya untuk broker relevan (episode/status aktif + 5 net buyer + 5 net seller), kolom inti + status."""
+    """broker_flow_daily ringkas untuk AI (broker relevan). Tanpa close/volume pasar (lihat market_daily.csv; join via trade_date).
+    Status per baris hanya memakai data s.d. tanggal itu; ringkasan akhir periode ada di period_end_summary.csv."""
     if not res or not res.get("ok"):
         return b"info\nledger kosong: perbarui di tab Ledger Broker\n"
-    H = res["hasil"]
-    urut = sorted(H, key=lambda k: H[k]["net_flow_lots"])
-    rel = set(urut[:5]) | set(urut[-5:]) | {k for k, v in H.items() if v["status"] in (ACC, DIST, MIXED) or v.get("episode")}
-    L = res["ledger"]
-    L = L[L["broker_code"].isin(rel)]
-    cols = ["trade_date", "broker_code", "buy_lots", "sell_lots", "net_lots", "cumulative_net_lots", "avg_buy_price", "avg_sell_price", "close_price", "volume_lots",
-            "crossing", "flow_status_akhir", "confidence_akhir", "estimated_position_lots_low", "estimated_avg_cost_proxy"]
-    out = L[cols].copy()
-    out["label"] = "NET_FLOW_PROXY"
-    for c in ("buy_lots", "sell_lots", "net_lots", "cumulative_net_lots", "volume_lots", "estimated_position_lots_low"):
-        out[c] = out[c].round(0)
-    for c in ("avg_buy_price", "avg_sell_price", "estimated_avg_cost_proxy", "close_price"):
-        out[c] = out[c].round(1)
-    return out.to_csv(index=False).encode("utf-8")
+    D = lq.broker_flow_daily(res["ledger"])
+    D = D[D["broker_code"].isin(_relevan(res))].drop(columns=["ticker", "broker_name", "buy_value_idr", "sell_value_idr", "unit_price"])
+    for c in ("buy_lots", "sell_lots", "net_lots", "cumulative_net_flow_proxy"):
+        D[c] = D[c].round(0)
+    for c in ("avg_buy_price", "avg_sell_price"):
+        D[c] = D[c].round(1)
+    D["net_value_idr"] = D["net_value_idr"].round(0)
+    return D.to_csv(index=False).encode("utf-8")

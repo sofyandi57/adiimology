@@ -198,7 +198,7 @@ def test_ui_tab_ledger(tmp_path, monkeypatch):
     [b for b in at.button if b.label == "⚡ Hitung cepat"][0].click().run()
     assert not at.exception, [e.value for e in at.exception]
     md = " ".join([m.value for m in at.markdown] + [m.value for m in at.subheader])
-    assert "Ledger Broker" in md and "Cakupan" in md and "Estimasi posisi" in md and "Bandar Score" in md
+    assert "Ledger Broker" in md and "Cakupan" in md and "Estimasi posisi" in md and "Bandar Score" in md and "Kualitas data & anomali" in md
     assert any("NET_FLOW_PROXY" in str(c.value) for c in at.caption) or "NET_FLOW_PROXY" in md
 
 

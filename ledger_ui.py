@@ -11,6 +11,7 @@ import adimology as ad
 import apicache
 import ledger as lg
 import ledger_calc as lc
+import ledger_kualitas as lq
 import ledger_score as ls
 
 WARNA = {lc.ACC: "🟢", lc.DIST: "🔴", lc.MIXED: "🟡", lc.NEUTRAL: "⚪", lc.INSUF: "⚫"}
@@ -28,7 +29,7 @@ def ledger_url() -> str | None:
 
 
 @st.cache_resource(show_spinner=False)
-def _eng(url: str, versi: int = 3):      # naikkan versi bila ada tabel baru (cache resource bertahan antar-deploy)
+def _eng(url: str, versi: int = 4):      # naikkan versi bila ada tabel baru (cache resource bertahan antar-deploy)
     return apicache.siapkan(lg.engine(url))
 
 
@@ -190,7 +191,7 @@ def tampil(kode: str, api_key: str | None) -> None:
     v = H[pilih]
     fig = go.Figure()
     fig.add_bar(x=g["trade_date"], y=g["net_lots"], name="Net lot harian", marker_color=["#2e7d32" if x >= 0 else "#c62828" for x in g["net_lots"]], opacity=0.6)
-    fig.add_scatter(x=g["trade_date"], y=g["cumulative_net_lots"], name="Net kumulatif (lot)", line=dict(color="#1565c0", width=2))
+    fig.add_scatter(x=g["trade_date"], y=g["cumulative_net_flow_proxy"], name="Cumulative net flow proxy (lot)", line=dict(color="#1565c0", width=2))
     fig.add_scatter(x=g["trade_date"], y=g["close_price"], name="Close", yaxis="y2", line=dict(color="#555", width=1.5))
     if v.get("episode") and pd.notna(v["episode"].get("avg_buy_ex_crossing")):
         fig.add_hline(y=v["episode"]["avg_buy_ex_crossing"], yref="y2", line_dash="dot", line_color="#ef6c00", annotation_text="proksi biaya (ex-crossing)")
@@ -202,18 +203,23 @@ def tampil(kode: str, api_key: str | None) -> None:
                           annotation_position="top left")
     fig.update_layout(height=430, margin=dict(l=10, r=10, t=30, b=10), legend=dict(orientation="h"), yaxis=dict(title="lot"), yaxis2=dict(title="harga", overlaying="y", side="right"))
     st.plotly_chart(fig, width="stretch")
-    st.caption(f"Status {v['status']} (confidence {v['confidence']}). " + (v.get("catatan") or "") +
+    st.caption(f"Status akhir periode {lq.label_kandidat(v['status'])} (aturan: {v['status']}; confidence {v['confidence']}). " + (v.get("catatan") or "") +
                " Sinyal akumulasi: " + ", ".join(f"{'✔' if ok else '✘'} {s}" for s, ok in v["sinyal_acc"].items()))
+    with st.expander(f"Status harian & rolling {pilih} (hanya data s.d. tanggal itu)"):
+        sd = res["status_detail"]
+        sd = sd[sd["broker_code"] == pilih].sort_values(["trade_date", "status_type"], ascending=[False, True])
+        st.dataframe(sd.drop(columns=["broker_code", "formula_version"]), hide_index=True, width="stretch")
 
     st.markdown("### Estimasi posisi (NET_FLOW_PROXY)")
     tp = lc.tabel_posisi(res)
     st.dataframe(tp, hide_index=True, width="stretch", column_config={
-        c: st.column_config.NumberColumn(format="%,.0f") for c in ("Gross Buy Lots", "Gross Sell Lots", "Net Flow Lots", "Est. Remaining Low", "Est. Remaining High", "Est. Remaining Base")} |
+        c: st.column_config.NumberColumn(format="%,.0f") for c in ("Gross Buy Lots", "Gross Sell Lots", "Cumulative net flow proxy", "Est. Remaining Low", "Est. Remaining High", "Est. Remaining Base")} |
         {c: st.column_config.NumberColumn(format="%.1f") for c in ("Avg Buy (gross)", "Avg Buy (ex-crossing)", "Net-flow cost proxy")} |
         {"Crossing % gross buy": st.column_config.NumberColumn(format="percent")})
     st.caption("Avg Buy (gross) = total nilai beli / total lembar beli. Ex-crossing membuang hari yang beli≈jual dalam jumlah besar. Net-flow cost proxy = selisih nilai / "
                "selisih lembar bersih (hanya bila net beli positif). Est. Remaining: rendah = persediaan awal 0; tinggi = persediaan awal minimal agar posisi tidak negatif; "
-               "Base = N/A kecuali Anda mengisi persediaan awal. Bukan kepemilikan aktual.")
+               "Base = N/A kecuali Anda mengisi persediaan awal. Bukan kepemilikan aktual: Status posisi = NOT_AVAILABLE bila persediaan awal tidak diketahui; "
+               "Status estimasi modal = UNRELIABLE bila broker beranomali (mis. beli besar tanpa jual), NOT_AVAILABLE bila tidak ada episode.")
 
     st.markdown("### Zona distribusi yang diamati")
     z = res["zona"].get("zona", {})
@@ -236,4 +242,63 @@ def tampil(kode: str, api_key: str | None) -> None:
         with st.expander(q):
             st.write(a)
 
-    st.download_button("⬇️ Unduh ledger (CSV)", lc.csv_ledger(res), f"ledger_{kode}_{res['tgl_akhir']}.csv", "text/csv", width="stretch")
+    _kualitas(eng, kode, res)
+    st.markdown("### Unduh tabel (terpisah; join per trade_date)")
+    d1, d2, d3, d4 = st.columns(4)
+    tl = res["tgl_akhir"]
+    d1.download_button("⬇️ broker_flow_daily", lc.csv_ledger(res), f"broker_flow_daily_{kode}_{tl}.csv", "text/csv", width="stretch",
+                       help="Satu baris per tanggal x broker; TANPA volume pasar. Status harian/rolling hanya memakai data s.d. tanggal itu.")
+    d2.download_button("⬇️ market_daily", lc.csv_market(res), f"market_daily_{kode}_{tl}.csv", "text/csv", width="stretch",
+                       help="Satu baris per tanggal: OHLC, volume pasar (lot & lembar), cek satuan, verifikasi sumber.")
+    d3.download_button("⬇️ period_end_summary", lc.csv_period_end(res), f"period_end_summary_{kode}_{tl}.csv", "text/csv", width="stretch",
+                       help="Ringkasan akhir periode per broker (tidak berlaku surut).")
+    d4.download_button("⬇️ broker_flow_features", lc.csv_fitur(res, n_asof=20, broker=set(res["hasil"])), f"broker_flow_features_{kode}_{tl}.csv", "text/csv",
+                       width="stretch", help="Fitur rolling 1/3/5/10/20 sesi (20 as_of terakhir, semua broker) dengan denominator, coverage, quality_flag.")
+
+
+def _kualitas(eng, kode: str, res: dict) -> None:
+    """Kualitas data, anomali broker, crossing vs reguler, dampak hari ekstrem, fitur rolling, dan verifikasi sumber harga."""
+    st.markdown("### Kualitas data & anomali")
+    an, ver = res["anomali"], res["sumber"]
+    try:
+        if not ver["konflik"].empty:
+            lg.simpan_konflik(eng, kode, ver["konflik"])
+    except Exception as e:
+        st.caption(f"Konflik sumber tidak tersimpan: {str(e)[:120]}")
+    (st.warning if ver["status"] == "KONFLIK" else st.info if ver["status"] == "BELUM_DIVERIFIKASI" else st.success)(
+        f"Verifikasi harga/volume: **{ver['status']}** — {ver['catatan']}")
+    if an:
+        st.warning("Broker beranomali (periksa manual; estimasi modal = UNRELIABLE): " + "; ".join(f"**{b}** " + ", ".join(a["flag"] for a in fl) for b, fl in an.items()))
+        st.dataframe(pd.DataFrame([dict(broker=b, **a) for b, fl in an.items() for a in fl]), hide_index=True, width="stretch")
+    else:
+        st.caption("Tidak ada anomali broker yang melewati ambang (relatif volume pasar; ubah di lc.Cfg.kualitas).")
+    with st.expander("Ringkasan akhir periode (period_end_summary)"):
+        st.caption("Status FINAL per broker pada akhir periode. Tidak disalin ke tanggal historis; untuk tanggal historis lihat status harian/rolling.")
+        st.dataframe(res["period_end"], hide_index=True, width="stretch")
+    with st.expander("Crossing vs pasar reguler & dampak hari ekstrem"):
+        st.caption("Crossing = heuristik (beli≈jual besar) di pasar reguler; segmen yang tidak diketahui ditandai UNKNOWN dan tidak digabung. "
+                   "Kolom 'tanpa hari ekstrem' adalah simulasi pembanding; data asli tidak dihapus.")
+        st.dataframe(res["crossing"], hide_index=True, width="stretch")
+        st.dataframe(res["ekstrem"].sort_values("net_lots_total", key=abs, ascending=False), hide_index=True, width="stretch")
+    with st.expander("Fitur rolling 1/3/5/10/20 sesi (as_of terakhir)"):
+        tl = res["tgl_akhir"]
+        n = st.selectbox("Jendela (sesi)", lq.JENDELA_FITUR, index=len(lq.JENDELA_FITUR) - 1)
+        f = res["fitur"][n]
+        tab = pd.DataFrame({k: f[k].loc[tl] for k in list(lq.DEFINISI) + ["source_coverage", "quality_flag"]})
+        tab = tab[tab["net_lots"].notna()].sort_values("net_lots", key=abs, ascending=False)
+        st.caption(f"as_of {tl}; lookback {n} sesi; formula {lq.FORMULA_VERSION}. Denominator: " + "; ".join(f"{k} = {v[1]}" for k, v in lq.DEFINISI.items() if v[1] != "-"))
+        st.dataframe(tab, width="stretch", column_config={c: st.column_config.NumberColumn(format="percent") for c in
+                                                          ("net_flow_pct_market_volume", "positive_flow_days_pct", "share_of_total_net_buy", "share_of_total_gross_buy", "source_coverage")})
+        st.dataframe(res["konsentrasi"][res["konsentrasi"]["as_of_date"] == tl], hide_index=True, width="stretch")
+    with st.expander("Pasar harian (market_daily) & impor sumber harga kedua"):
+        st.dataframe(res["pasar"], hide_index=True, width="stretch")
+        st.caption("Unggah CSV harga dari sumber kedua (kolom: date/trade_date, close, opsional open/high/low, volume_shares atau volume_lots) untuk verifikasi silang. "
+                   "Konflik dicatat di tabel ledger_source_conflict; nilai sumber utama tidak ditimpa. Aplikasi tidak mengambil data dari internet.")
+        up = st.file_uploader("CSV sumber kedua", type=["csv"], key=f"ext_{kode}")
+        nama = st.text_input("Nama sumber", "eksternal_csv", key=f"extn_{kode}")
+        if up is not None and st.button("Simpan sumber kedua", key=f"exts_{kode}"):
+            try:
+                n_ = lg.simpan_pasar_eksternal(eng, kode, pd.read_csv(up), nama)
+                st.success(f"{n_} baris disimpan sebagai sumber '{nama}'. Muat ulang untuk melihat hasil verifikasi.")
+            except Exception as e:
+                st.error(f"Gagal: {str(e)[:200]}")
