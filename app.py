@@ -774,10 +774,10 @@ Semua aturan adalah heuristik yang belum terbukti secara statistik. Edukasi, buk
 
 @st.dialog("Petunjuk penggunaan", width="large")
 def petunjuk():
-    pdf_ = os.path.join(os.path.dirname(os.path.abspath(__file__)), "docs", "Petunjuk_Penggunaan_Adimology.pdf")
+    pdf_ = os.path.join(os.path.dirname(os.path.abspath(__file__)), "docs", "Petunjuk_Penggunaan_Adimology_v1.1.pdf")
     if os.path.exists(pdf_):
         with open(pdf_, "rb") as fh_:
-            st.download_button("📘 Unduh panduan lengkap (PDF, untuk pemula, dengan contoh DSSA)", fh_.read(), "Petunjuk_Penggunaan_Adimology.pdf", "application/pdf", width="stretch")
+            st.download_button("📘 Unduh panduan lengkap v1.1 (PDF, untuk pemula, dengan contoh DSSA)", fh_.read(), "Petunjuk_Penggunaan_Adimology_v1.1.pdf", "application/pdf", width="stretch")
     st.markdown(PETUNJUK)
 
 
